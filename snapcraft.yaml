@@ -17,7 +17,7 @@ parts:
     source: https://github.com/ph0llux/zffacquire.git
     override-pull: |
       snapcraftctl pull
-      VERSION="$(git -C ../src describe --tags  | sed 's/v//')"
+      VERSION="$(git describe --tags --abbrev=0)"
       [ -n "$(echo $VERSION)" ] && GRADE=stable
       snapcraftctl set-version "$VERSION"
       snapcraftctl set-grade "$GRADE"
