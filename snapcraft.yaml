@@ -1,0 +1,28 @@
+name: zffacquire
+adopt-info: zffacquire
+summary: Tool to acquire entire disks or files in Zff format.
+description: |
+  zffacquire is used to dump physical memory (or RAM) or files in zff format.
+
+  Zff (Z forensic file format) is a completley new designed file format to store and handle the contents and structure 
+  of a partial or entire disk image or physical memory. The focus of zff is on speed, security and modularity in concert 
+  with forensic requirements. The modular design promises high maintainability and scalability. Zff is an alternative 
+  to the ewf and aff file formats and is not compatible with them.
+base: core20
+confinement: strict
+parts:
+  zffacquire:
+    build-packages: [ gcc ]
+    plugin: rust
+    source: https://github.com/ph0llux/zffacquire.git
+    override-pull: |
+      snapcraftctl pull
+      VERSION="$(git -C ../src describe --tags  | sed 's/v//')"
+      [ -n "$(echo $VERSION)" ] && GRADE=stable
+      snapcraftctl set-version "$VERSION"
+      snapcraftctl set-grade "$GRADE"
+apps:
+  zffacquire:
+    command: bin/zffacquire
+architectures:
+  - build-on: [amd64,arm64]
