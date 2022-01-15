@@ -20,10 +20,9 @@ test = true
 bench = true
 
 [dependencies]
-async-std = { version = "1.10.0", features = ["attributes"] }
-clap = "2.33"
+clap = { version = "3.0.5", features = [ "derive" ] }
 rand = "0.7.3"
-zff = { version = "0.10.1" }
+zff = { path="../../Projekte/zff" }
 toml = "0.5.8"
 base64 = "0.13.0"
 #signing
