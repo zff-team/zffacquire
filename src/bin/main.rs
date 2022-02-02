@@ -27,6 +27,7 @@ use zff::{
     ZffCreatorPhysical,
     Encryption,
     Signature,
+    SignatureFlag,
     constants::{
         DEFAULT_COMPRESSION_RATIO_THRESHOLD,
         DEFAULT_HEADER_VERSION_COMPRESSION_HEADER,
@@ -362,17 +363,7 @@ fn main() {
     let args = Cli::parse();
 
     // -- MainHeader:
-    let (encryption_header, encryption_key) = match encryption_header(&args) {
-        Some((header, key)) => (Some(header), Some(key)),
-        None => (None, None)
-    };
-    let compression_header = compression_header(&args);
     let chunk_size = &args.chunk_size.get_size();
-    let signature_flag = match &args.sign_data {
-        SignatureFlagValues::NoSignatures => SignatureFlag::NoSignatures,
-        SignatureFlagValues::HashValueSignatureOnly => SignatureFlag::HashValueSignatureOnly,
-        SignatureFlagValues::PerChunkSignatures => SignatureFlag::PerChunkSignatures,
-    };
     let segment_size = match hrs_parser(&args.segment_size) {
         Some(val) => val,
         None => {
@@ -384,21 +375,27 @@ fn main() {
         let mut rng = rand::thread_rng();
         rng.gen()
     };
-    let description_notes = args.description_notes.clone();
 
     let main_header = MainHeader::new(
         DEFAULT_HEADER_VERSION_MAIN_HEADER,
-        encryption_header,
-        compression_header,
         *chunk_size,
-        signature_flag,
         segment_size,
-        unique_segment_identifier,
-        description_notes);
+        unique_segment_identifier);
     // --
 
     // -- ZffCreator
     // --- object header
+    let (encryption_header, encryption_key) = match encryption_header(&args) {
+        Some((header, key)) => (Some(header), Some(key)),
+        None => (None, None)
+    };
+    let compression_header = compression_header(&args);
+    let signature_flag = match &args.sign_data {
+        SignatureFlagValues::NoSignatures => SignatureFlag::NoSignatures,
+        SignatureFlagValues::HashValueSignatureOnly => SignatureFlag::HashValueSignatureOnly,
+        SignatureFlagValues::PerChunkSignatures => SignatureFlag::PerChunkSignatures,
+    };
+
     let object_header = {
         let object_number = match &args.command {
             Commands::Physical => INITIAL_OBJECT_NUMBER
@@ -407,7 +404,7 @@ fn main() {
         let object_type = match &args.command {
             Commands::Physical => ObjectType::Physical
         };
-        ObjectHeader::new(DEFAULT_HEADER_VERSION_OBJECT_HEADER, object_number, description_header, object_type)
+        ObjectHeader::new(DEFAULT_HEADER_VERSION_OBJECT_HEADER, object_number, encryption_header, compression_header, signature_flag, description_header, object_type)
     };
 
     let input_data = match File::open(&args.inputfile) {
@@ -434,11 +431,27 @@ fn main() {
 
     match args.command {
         Commands::Physical => {
-            let mut zffcreator = ZffCreatorPhysical::new(object_header, input_data, hash_types, encryption_key, sign_keypair, main_header, args.encrypted_header, output_filepath);
+            let mut zffcreator = match ZffCreatorPhysical::new(
+                                            object_header,
+                                            input_data, 
+                                            hash_types,
+                                            encryption_key,
+                                            sign_keypair,
+                                            main_header,
+                                            args.encrypted_header,
+                                            args.description_notes,
+                                            output_filepath) {
+                Ok(zffcreator) => zffcreator,
+                Err(e) => {
+                    println!("{ERROR_CREATE_OBJECT_ENCODER}, {e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+
+            };
             match zffcreator.generate_files() {
                 Ok(()) => exit(EXIT_STATUS_SUCCESS),
                 Err(e) => {
-                    println!("{}{}", ERROR_GENERATE_FILES, e.to_string());
+                    println!("{ERROR_GENERATE_FILES}{e}");
                     exit(EXIT_STATUS_ERROR);
                 }
             }
