@@ -2,6 +2,7 @@
 use std::{
     fs::{File},
     process::exit,
+    path::PathBuf,
 };
 
 // - extern crates
@@ -18,13 +19,15 @@ use crate::lib::{
     constants::*,
 };
 use zff::{
-    header::*,
+    header::{CompressionHeader, EncryptionHeader, DescriptionHeader, MainHeader, ObjectHeader, ObjectType},
+    header::version1::{KDFParameters, PBKDF2SHA256Parameters, PBEHeader},
     EncryptionAlgorithm,
     CompressionAlgorithm,
     HashType,
     KDFScheme,
     PBEScheme,
     ZffCreatorPhysical,
+    ZffCreatorLogical,
     Encryption,
     Signature,
     SignatureFlag,
@@ -49,8 +52,6 @@ use clap::{
 };
 use rand::{Rng};
 use ed25519_dalek::Keypair;
-use toml;
-use base64;
 
 #[derive(Parser)]
 #[clap(about, version, author)]
@@ -59,10 +60,6 @@ struct Cli {
     /// A general description of all data, which are inside the zff file(s).
     #[clap(short='D', long="description-notes", global=true, required=false)]
     description_notes: Option<String>,
-
-    /// The input file. This should be your device to dump. This field is REQUIRED.
-    #[clap(short='i', long="inputfile", global=true, required=false)]
-    inputfile: String,
 
     /// The the name/path of the output-file WITHOUT file extension. E.g. \"/home/ph0llux/sda_dump\". File extension will be added automatically. This field is REQUIRED.
     #[clap(short='o', long="outputfile", global=true, required=false)]
@@ -140,7 +137,18 @@ struct Cli {
 enum Commands {
     /// acquire a physical image
     #[clap(setting(AppSettings::ArgRequiredElseHelp))]
-    Physical,
+    Physical {
+        /// The input file. This should be your device to dump. This field is REQUIRED.
+        #[clap(short='i', long="inputfile", required=true)]
+        inputfile: PathBuf,
+    },
+    /// acquire logical folder
+    #[clap(setting(AppSettings::ArgRequiredElseHelp))]
+    Logical {
+        /// The input folders. You can use this option multiple times. This field is REQUIRED.
+        #[clap(short='i', long="inputfiles", required=true)]
+        inputfiles: Vec<PathBuf>,
+    },
 }
 
 #[derive(ArgEnum, Clone)]
@@ -398,21 +406,15 @@ fn main() {
 
     let object_header = {
         let object_number = match &args.command {
-            Commands::Physical => INITIAL_OBJECT_NUMBER
+            Commands::Physical { inputfile: _ } => INITIAL_OBJECT_NUMBER,
+            Commands::Logical { inputfiles: _ } => INITIAL_OBJECT_NUMBER,
         };
         let description_header = description_header(&args);
         let object_type = match &args.command {
-            Commands::Physical => ObjectType::Physical
+            Commands::Physical { inputfile: _ } => ObjectType::Physical,
+            Commands::Logical { inputfiles: _ } => ObjectType::Logical,
         };
         ObjectHeader::new(DEFAULT_HEADER_VERSION_OBJECT_HEADER, object_number, encryption_header, compression_header, signature_flag, description_header, object_type)
-    };
-
-    let input_data = match File::open(&args.inputfile) {
-        Ok(f) => f,
-        Err(e) => {
-            println!("{}{}\n{}", ERROR_OPEN_INPUT_FILE, &args.inputfile, e.to_string());
-            exit(EXIT_STATUS_ERROR);
-        }
     };
 
     let mut hash_types = Vec::new();
@@ -430,7 +432,15 @@ fn main() {
     let output_filepath = args.outputfile;
 
     match args.command {
-        Commands::Physical => {
+        // Physical acquisition
+        Commands::Physical { inputfile } => {
+            let input_data = match File::open(&inputfile) {
+                Ok(f) => f,
+                Err(e) => {
+                    println!("{}{}\n{}", ERROR_OPEN_INPUT_FILE, inputfile.to_string_lossy(), e.to_string());
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
             let mut zffcreator = match ZffCreatorPhysical::new(
                                             object_header,
                                             input_data, 
@@ -443,7 +453,7 @@ fn main() {
                                             output_filepath) {
                 Ok(zffcreator) => zffcreator,
                 Err(e) => {
-                    println!("{ERROR_CREATE_OBJECT_ENCODER}, {e}");
+                    eprintln!("{ERROR_CREATE_OBJECT_ENCODER}{e}");
                     exit(EXIT_STATUS_ERROR);
                 }
 
@@ -455,6 +465,36 @@ fn main() {
                     exit(EXIT_STATUS_ERROR);
                 }
             }
-        }
+        },
+        //logical acquisition
+        Commands::Logical { inputfiles } => {
+            let mut zffcreator = match ZffCreatorLogical::new(
+                object_header,
+                inputfiles,
+                hash_types,
+                encryption_key,
+                sign_keypair,
+                main_header,
+                args.encrypted_header,
+                args.description_notes,
+                output_filepath,
+                ) {
+                Ok(zffcreator) => zffcreator,
+                Err(e) => {
+                    eprintln!("{ERROR_CREATE_OBJECT_ENCODER}{e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
+            for unaccessable_file in zffcreator.unaccessable_files() {
+                eprintln!("{WARNING_UNACCESSABLE_LOGICAL_FILE}{unaccessable_file}");
+            }
+            match zffcreator.generate_files() {
+                Ok(()) => exit(EXIT_STATUS_SUCCESS),
+                Err(e) => {
+                    eprintln!("{ERROR_GENERATE_FILES}{e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            }
+        },
     }
 }

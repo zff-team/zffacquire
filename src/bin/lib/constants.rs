@@ -7,6 +7,7 @@ pub(crate) const ERROR_PARSE_KEY: &'static str = "Could not parse your given bas
 pub(crate) const ERROR_UNPARSABLE_SEGMENT_SIZE_VALUE: &'static str = "Error: can not parse the given segment size value: ";
 pub(crate) const ERROR_GENERATE_FILES: &'static str = "An error occurred while trying to generate the zff file segment(s): ";
 pub(crate) const ERROR_CREATE_OBJECT_ENCODER: &'static str ="An error occurred while trying to generate the object encoder: ";
+pub(crate) const WARNING_UNACCESSABLE_LOGICAL_FILE: &'static str = "Could not open/read file: ";
 
 pub(crate) const EXIT_STATUS_ERROR: i32 = 1;
 pub(crate) const EXIT_STATUS_SUCCESS: i32 = 0;
