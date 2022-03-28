@@ -1,11 +1,11 @@
 [package]
 name = "zffacquire"
 authors = ["ph0llux <ph0llux@pm.me>"]
-version = "0.10.1"
+version = "1.0.0-beta"
 edition = "2021"
-rust-version = "1.56.1"
+rust-version = "1.58.1"
 license = "MIT OR Apache-2.0"
-description = "A command line utility for acquiring images into the forensic format Zff."
+description = "A command line utility for acquiring data into the forensic format Zff."
 readme = "README.md"
 homepage = "https://github.com/ph0llux/zff"
 repository = "https://github.com/ph0llux/zff"
@@ -22,6 +22,6 @@ bench = true
 [dependencies]
 clap = { version = "3.0.5", features = [ "derive" ] }
 rand = "0.7.3"
-zff = { path="../../Projekte/zff" }
+zff = { version="2.0.0-alpha" }
 #signing
 ed25519-dalek = { version = "1.0.1", features = [ "rand" ] }
