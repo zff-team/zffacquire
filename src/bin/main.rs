@@ -3,6 +3,7 @@ use std::{
     fs::{File},
     process::exit,
     path::PathBuf,
+    collections::{HashMap},
 };
 
 // - extern crates
@@ -28,6 +29,7 @@ use zff::{
     PBEScheme,
     ZffCreatorPhysical,
     ZffCreatorLogical,
+    ZffExtender,
     Encryption,
     Signature,
     SignatureFlag,
@@ -60,10 +62,6 @@ struct Cli {
     /// A general description of all data, which are inside the zff file(s).
     #[clap(short='D', long="description-notes", global=true, required=false)]
     description_notes: Option<String>,
-
-    /// The the name/path of the output-file WITHOUT file extension. E.g. \"/home/ph0llux/sda_dump\". File extension will be added automatically. This field is REQUIRED.
-    #[clap(short='o', long="outputfile", global=true, required=false)]
-    outputfile: String,
 
     /// sets the compression algorithm. Default is zstd.
     #[clap(short='z', long="compression-algorithm", global=true, required=false, arg_enum, default_value="zstd")]
@@ -136,6 +134,43 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// acquire a physical image
+    #[clap(setting(AppSettings::ArgRequiredElseHelp))]
+    Physical {
+        /// The input file. This should be your device to dump. This field is REQUIRED.
+        #[clap(short='i', long="inputfile", required=true)]
+        inputfile: PathBuf,
+
+        /// The the name/path of the output-file WITHOUT file extension. E.g. \"/home/ph0llux/sda_dump\". File extension will be added automatically. This field is REQUIRED.
+        #[clap(short='o', long="outputfile", global=true, required=false)]
+        outputfile: String,
+    },
+    /// acquire logical folder
+    #[clap(setting(AppSettings::ArgRequiredElseHelp))]
+    Logical {
+        /// The input folders. You can use this option multiple times. This field is REQUIRED.
+        #[clap(short='i', long="inputfiles", required=true)]
+        inputfiles: Vec<PathBuf>,
+
+        /// The the name/path of the output-file WITHOUT file extension. E.g. \"/home/ph0llux/sda_dump\". File extension will be added automatically. This field is REQUIRED.
+        #[clap(short='o', long="outputfile", global=true, required=false)]
+        outputfile: String,
+    },
+
+    /// extends an existing zff file
+    #[clap(setting(AppSettings::ArgRequiredElseHelp))]
+    Extend {
+        /// Your zXX files, which should be extended.
+        #[clap(short='a', long="append", global=true)]
+        append_files: Vec<PathBuf>,
+
+        #[clap(subcommand)]
+        extend_command: ExtendSubcommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExtendSubcommands {
+    /// acquire a physical image. 
     #[clap(setting(AppSettings::ArgRequiredElseHelp))]
     Physical {
         /// The input file. This should be your device to dump. This field is REQUIRED.
@@ -406,13 +441,18 @@ fn main() {
 
     let object_header = {
         let object_number = match &args.command {
-            Commands::Physical { inputfile: _ } => INITIAL_OBJECT_NUMBER,
-            Commands::Logical { inputfiles: _ } => INITIAL_OBJECT_NUMBER,
+            Commands::Physical { inputfile: _, outputfile: _ } => INITIAL_OBJECT_NUMBER,
+            Commands::Logical { inputfiles: _, outputfile: _ } => INITIAL_OBJECT_NUMBER,
+            Commands::Extend { extend_command: _, append_files: _ } => INITIAL_OBJECT_NUMBER,
         };
         let description_header = description_header(&args);
         let object_type = match &args.command {
-            Commands::Physical { inputfile: _ } => ObjectType::Physical,
-            Commands::Logical { inputfiles: _ } => ObjectType::Logical,
+            Commands::Physical { inputfile: _, outputfile: _ } => ObjectType::Physical,
+            Commands::Logical { inputfiles: _, outputfile: _ } => ObjectType::Logical,
+            Commands::Extend { extend_command, append_files: _ } => match extend_command {
+                ExtendSubcommands::Physical { inputfile: _ } => ObjectType::Physical,
+                ExtendSubcommands::Logical { inputfiles: _ } => ObjectType::Logical,
+            },
         };
         ObjectHeader::new(DEFAULT_HEADER_VERSION_OBJECT_HEADER, object_number, encryption_header, compression_header, signature_flag, description_header, object_type)
     };
@@ -429,11 +469,10 @@ fn main() {
 
     let sign_keypair = signer(&args);
 
-    let output_filepath = args.outputfile;
-
     match args.command {
         // Physical acquisition
-        Commands::Physical { inputfile } => {
+        Commands::Physical { inputfile, outputfile } => {
+            let output_filepath = outputfile;
             let input_data = match File::open(&inputfile) {
                 Ok(f) => f,
                 Err(e) => {
@@ -467,7 +506,8 @@ fn main() {
             }
         },
         //logical acquisition
-        Commands::Logical { inputfiles } => {
+        Commands::Logical { inputfiles, outputfile } => {
+            let output_filepath = outputfile;
             let mut zffcreator = match ZffCreatorLogical::new(
                 object_header,
                 inputfiles,
@@ -496,5 +536,48 @@ fn main() {
                 }
             }
         },
+        //Extension
+        Commands::Extend { extend_command, append_files } => {
+            let mut zffextender = match extend_command {
+                ExtendSubcommands::Physical { inputfile } => {
+                    let input_data = match File::open(&inputfile) {
+                        Ok(f) => {
+                            let mut input_data_map = HashMap::new();
+                            input_data_map.insert(object_header, f);
+                            input_data_map
+                        },
+                        Err(e) => {
+                            println!("{}{}\n{}", ERROR_OPEN_INPUT_FILE, inputfile.to_string_lossy(), e.to_string());
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    };
+                    match ZffExtender::new(append_files, input_data, HashMap::new(), hash_types, encryption_key, sign_keypair, main_header, args.encrypted_header) {
+                        Ok(extender) => extender,
+                        Err(e) => {
+                            eprintln!("{e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    }
+                },
+                ExtendSubcommands::Logical { inputfiles } => {
+                    let mut input_data_map = HashMap::new();
+                    input_data_map.insert(object_header, inputfiles);
+                    match ZffExtender::new(append_files, HashMap::<ObjectHeader, std::fs::File>::new(), input_data_map, hash_types, encryption_key, sign_keypair, main_header, args.encrypted_header) {
+                        Ok(extender) => extender,
+                        Err(e) => {
+                            eprintln!("{e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    }
+                }
+            };
+            match zffextender.extend() {
+                Ok(()) => exit(EXIT_STATUS_SUCCESS),
+                Err(e) => {
+                    eprintln!("An error occurred while trying to extend the current files: {e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            }
+        }
     }
 }
