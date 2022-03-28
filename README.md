@@ -30,7 +30,7 @@ $ cargo install zffacquire
 
 To create an image with the default parameters, the following command is just enough:
 ```bash
-zffacquire -i /dev/sda -o /media/usb-hdd/your_zff_image
+zffacquire physical -i /dev/sda -o /media/usb-hdd/your_zff_image
 ```
 
 The complete feature set of ```zffacquire``` can be shown using ```zffacquire -h```.
