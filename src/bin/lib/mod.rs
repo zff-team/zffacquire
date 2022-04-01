@@ -7,10 +7,7 @@ use crate::HRS_PARSER_BASE;
 
 pub(crate) fn hrs_parser<V: Into<String>>(value: V) -> Option<u64> {
     let mut value = value.into();
-    match value.parse() {
-        Ok(val) => return Some(val),
-        Err(_) => ()
-    };
+    if let Ok(val) = value.parse() { return Some(val) };
     let mut last_char = value.pop()?;
     if last_char == 'b' || last_char == 'B' {
         last_char = value.pop()?;
@@ -45,5 +42,5 @@ pub(crate) fn hrs_parser<V: Into<String>>(value: V) -> Option<u64> {
             Err(_) => return None,
         }
     }
-    return None;
+    None
 }

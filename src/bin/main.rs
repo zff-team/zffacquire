@@ -277,15 +277,12 @@ enum SignatureFlagValues {
 }
 
 fn signer(args: &Cli) -> Option<Keypair> {
-    match args.sign_data {
-        SignatureFlagValues::NoSignatures => return None,
-        _ => ()
-    }
+    if let SignatureFlagValues::NoSignatures = args.sign_data { return None }
 
     match &args.sign_keypair {
-        None => return Some(Signature::new_keypair()),
+        None => Some(Signature::new_keypair()),
         Some(value) => match Signature::new_keypair_from_base64(value.trim()) {
-            Ok(keypair) => return Some(keypair),
+            Ok(keypair) => Some(keypair),
             Err(_) => {
                 println!("{}", ERROR_PARSE_KEY);
                 exit(EXIT_STATUS_ERROR);
@@ -382,7 +379,7 @@ fn encryption_header(args: &Cli) -> Option<(EncryptionHeader, Vec<u8>)> {
         encrypted_encryption_key,
         Encryption::gen_random_header_nonce()
         );
-    return Some((encryption_header, encryption_key));
+    Some((encryption_header, encryption_key))
 }
 
 fn description_header(args: &Cli) -> DescriptionHeader {
@@ -476,7 +473,7 @@ fn main() {
             let input_data = match File::open(&inputfile) {
                 Ok(f) => f,
                 Err(e) => {
-                    println!("{}{}\n{}", ERROR_OPEN_INPUT_FILE, inputfile.to_string_lossy(), e.to_string());
+                    println!("{}{}\n{}", ERROR_OPEN_INPUT_FILE, inputfile.to_string_lossy(), e);
                     exit(EXIT_STATUS_ERROR);
                 }
             };
@@ -547,7 +544,7 @@ fn main() {
                             input_data_map
                         },
                         Err(e) => {
-                            println!("{}{}\n{}", ERROR_OPEN_INPUT_FILE, inputfile.to_string_lossy(), e.to_string());
+                            println!("{}{}\n{}", ERROR_OPEN_INPUT_FILE, inputfile.to_string_lossy(), e);
                             exit(EXIT_STATUS_ERROR);
                         }
                     };
