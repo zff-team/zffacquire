@@ -14,3 +14,9 @@ pub(crate) const EXIT_STATUS_SUCCESS: i32 = 0;
 
 // uncategorized
 pub(crate) const HRS_PARSER_BASE: u64 = 1024;
+
+
+// scrypt parameters
+pub(crate) const SCRYPT_LOGN_RECOMMENDED: u8 = 15;
+pub(crate) const SCRYPT_R_RECOMMENDED: u32 = 1;
+pub(crate) const SCRYPT_P_RECOMMENDED: u32 = 1;

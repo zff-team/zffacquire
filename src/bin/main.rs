@@ -21,14 +21,13 @@ use crate::lib::{
 };
 use zff::{
     header::{CompressionHeader, EncryptionHeader, DescriptionHeader, MainHeader, ObjectHeader, ObjectType},
-    header::version1::{KDFParameters, PBKDF2SHA256Parameters, PBEHeader},
+    header::{KDFParameters, PBKDF2SHA256Parameters, ScryptParameters, PBEHeader},
     EncryptionAlgorithm,
     CompressionAlgorithm,
     HashType,
     KDFScheme,
     PBEScheme,
-    ZffCreatorPhysical,
-    ZffCreatorLogical,
+    ZffCreator,
     ZffExtender,
     Encryption,
     Signature,
@@ -208,6 +207,8 @@ enum CompressionAlgorithmValues {
 enum PasswordKdfValues {
     Pbkdf2Sha256Aes128Cbc,
     Pbkdf2Sha256Aes256Cbc,
+    ScryptAes128Cbc,
+    ScryptAes256Cbc,
 }
 
 #[derive(ArgEnum, Clone)]
@@ -313,6 +314,8 @@ fn encryption_header(args: &Cli) -> Option<(EncryptionHeader, Vec<u8>)> {
     let (kdf, pbes) = match args.password_kdf {
         PasswordKdfValues::Pbkdf2Sha256Aes128Cbc => (KDFScheme::PBKDF2SHA256, PBEScheme::AES128CBC),
         PasswordKdfValues::Pbkdf2Sha256Aes256Cbc => (KDFScheme::PBKDF2SHA256, PBEScheme::AES256CBC),
+        PasswordKdfValues::ScryptAes128Cbc => (KDFScheme::Scrypt, PBEScheme::AES128CBC),
+        PasswordKdfValues::ScryptAes256Cbc => (KDFScheme::Scrypt, PBEScheme::AES256CBC),
     };
     let encryption_algorithm = match args.encryption_algorithm {
         EncryptionAlgorithmValues::AES128GCMSIV => EncryptionAlgorithm::AES128GCMSIV,
@@ -326,11 +329,11 @@ fn encryption_header(args: &Cli) -> Option<(EncryptionHeader, Vec<u8>)> {
             exit(EXIT_STATUS_ERROR)
         },
     };
+    let pbe_nonce = Encryption::gen_random_iv();
+    let salt = Encryption::gen_random_salt();
     let (pbe_header, encrypted_encryption_key) = match kdf {
         KDFScheme::PBKDF2SHA256 => {
-            let pbe_nonce = Encryption::gen_random_iv();
-            let iterations = u16::MAX;
-            let salt = Encryption::gen_random_salt();
+            let iterations = 256000;
             let kdf_parameters = KDFParameters::PBKDF2SHA256Parameters(PBKDF2SHA256Parameters::new(iterations, salt));
             let pbe_header = PBEHeader::new(DEFAULT_HEADER_VERSION_PBE_HEADER, kdf, pbes.clone(), kdf_parameters, pbe_nonce);
             let encrypted_encryption_key = match pbes {
@@ -354,6 +357,34 @@ fn encryption_header(args: &Cli) -> Option<(EncryptionHeader, Vec<u8>)> {
                     password.trim(),
                     &encryption_key,
                     ) {
+                    Ok(val) => val,
+                    Err(_) => {
+                        println!("{}", ERROR_ENCRYPT_KEY);
+                        exit(EXIT_STATUS_ERROR);
+                    }
+                },
+                _ => {
+                    println!("{}", ERROR_UNKNOWN_PASSWORD_KDF);
+                    exit(EXIT_STATUS_ERROR)
+                },
+            };
+            (pbe_header, encrypted_encryption_key)
+        },
+        KDFScheme::Scrypt => {
+            let logn = SCRYPT_LOGN_RECOMMENDED;
+            let r = SCRYPT_R_RECOMMENDED;
+            let p = SCRYPT_P_RECOMMENDED;
+            let kdf_parameters = KDFParameters::ScryptParameters(ScryptParameters::new(logn, r, p, salt));
+            let pbe_header = PBEHeader::new(DEFAULT_HEADER_VERSION_PBE_HEADER, kdf, pbes.clone(), kdf_parameters, pbe_nonce);
+            let encrypted_encryption_key = match pbes {
+                PBEScheme::AES128CBC => match Encryption::encrypt_scrypt_aes128cbc(logn, r, p, &salt, &pbe_nonce, password.trim(), &encryption_key) {
+                    Ok(val) => val,
+                    Err(_) => {
+                        println!("{}", ERROR_ENCRYPT_KEY);
+                        exit(EXIT_STATUS_ERROR);
+                    }
+                },
+                PBEScheme::AES256CBC => match Encryption::encrypt_scrypt_aes256cbc(logn, r, p, &salt, &pbe_nonce, password.trim(), &encryption_key) {
                     Ok(val) => val,
                     Err(_) => {
                         println!("{}", ERROR_ENCRYPT_KEY);
@@ -471,15 +502,19 @@ fn main() {
         Commands::Physical { inputfile, outputfile } => {
             let output_filepath = outputfile;
             let input_data = match File::open(&inputfile) {
-                Ok(f) => f,
+                Ok(f) => {
+                    let mut input_data_map = HashMap::new();
+                    input_data_map.insert(object_header, f);
+                    input_data_map
+                },
                 Err(e) => {
                     println!("{}{}\n{}", ERROR_OPEN_INPUT_FILE, inputfile.to_string_lossy(), e);
                     exit(EXIT_STATUS_ERROR);
                 }
             };
-            let mut zffcreator = match ZffCreatorPhysical::new(
-                                            object_header,
-                                            input_data, 
+            let mut zffcreator = match ZffCreator::new(
+                                            input_data,
+                                            HashMap::new(), 
                                             hash_types,
                                             encryption_key,
                                             sign_keypair,
@@ -505,9 +540,11 @@ fn main() {
         //logical acquisition
         Commands::Logical { inputfiles, outputfile } => {
             let output_filepath = outputfile;
-            let mut zffcreator = match ZffCreatorLogical::new(
-                object_header,
-                inputfiles,
+            let mut input_data_map = HashMap::new();
+            input_data_map.insert(object_header, inputfiles);
+            let mut zffcreator = match ZffCreator::new(
+                HashMap::<ObjectHeader, std::fs::File>::new(),
+                input_data_map,
                 hash_types,
                 encryption_key,
                 sign_keypair,
