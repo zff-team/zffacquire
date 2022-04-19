@@ -30,7 +30,19 @@ $ cargo install zffacquire
 
 To create an image with the default parameters, the following command is just enough:
 ```bash
-zffacquire physical -i /dev/sda -o /media/usb-hdd/your_zff_image
+zffacquire physical -i /dev/sda -o /media/usb-hdd/my_zff_container
+```
+
+You can also dump a logical folder structure into a logical zff container:
+```bash
+zffacquire logical -i /home/ph0llux/pictures -o /media/usb-hdd/my_zff_container
+```
+
+And you can extend an zff container by adding additional containers:
+```bash
+zffacquire physical -i /dev/sda -o /media/usb-hdd/my_zff_container
+zffacquire extend logical -i /home/ph0llux/pictures -a /media/usb-hdd/my_zff_container.z01
+zffacquire extend physical -i /dev/sdb -a /media/usb-hdd/my_zff_container.z01
 ```
 
 The complete feature set of ```zffacquire``` can be shown using ```zffacquire -h```.
