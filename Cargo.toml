@@ -20,8 +20,8 @@ test = true
 bench = true
 
 [dependencies]
-clap = { version = "3.0.5", features = [ "derive" ] }
+clap = { version = "3.1.10", features = [ "derive" ] }
 rand = "0.7.3"
-zff = { version="2.0.0-beta" }
+zff = { version="2.0.0-beta.1" }
 #signing
 ed25519-dalek = { version = "1.0.1", features = [ "rand" ] }
