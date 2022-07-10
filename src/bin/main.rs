@@ -18,6 +18,7 @@ mod lib;
 use crate::lib::{
     hrs_parser,
     constants::*,
+    OutputInfo,
 };
 use zff::{
     header::{CompressionHeader, EncryptionHeader, DescriptionHeader, MainHeader, ObjectHeader, ObjectType},
@@ -299,10 +300,10 @@ fn compression_header(args: &Cli) -> CompressionHeader {
         CompressionAlgorithmValues::Lz4 => CompressionAlgorithm::Lz4,
     };
     if args.compression_level > 9 {
-        println!("error: Invalid value for '--compression-level <COMPRESSION_LEVEL>': number <{}> too large to fit in target type. (Possible values are 1-9)", args.compression_level);
+        eprintln!("error: Invalid value for '--compression-level <COMPRESSION_LEVEL>': number <{}> too large to fit in target type. (Possible values are 1-9)", args.compression_level);
         exit(EXIT_STATUS_ERROR);    
     } else if args.compression_level  < 1 {
-        println!("error: Invalid value for '--compression-level <COMPRESSION_LEVEL>': number <{}> too small to fit in target type. (Possible values are 1-9)", args.compression_level);
+        eprintln!("error: Invalid value for '--compression-level <COMPRESSION_LEVEL>': number <{}> too small to fit in target type. (Possible values are 1-9)", args.compression_level);
         exit(EXIT_STATUS_ERROR);
     }
     CompressionHeader::new(DEFAULT_HEADER_VERSION_COMPRESSION_HEADER, compression_algorithm, args.compression_level, args.compression_threshold)
@@ -432,6 +433,7 @@ fn description_header(args: &Cli) -> DescriptionHeader {
 
 fn main() {
     let args = Cli::parse();
+    let mut output_information = OutputInfo::new();
 
     // -- MainHeader:
     let chunk_size = &args.chunk_size.get_size();
@@ -482,7 +484,7 @@ fn main() {
                 ExtendSubcommands::Logical { inputfiles: _ } => ObjectType::Logical,
             },
         };
-        ObjectHeader::new(DEFAULT_HEADER_VERSION_OBJECT_HEADER, object_number, encryption_header, compression_header, signature_flag, description_header, object_type)
+        ObjectHeader::new(DEFAULT_HEADER_VERSION_OBJECT_HEADER, object_number, encryption_header.clone(), compression_header.clone(), signature_flag, description_header, object_type)
     };
 
     let mut hash_types = Vec::new();
@@ -496,6 +498,9 @@ fn main() {
     }
 
     let sign_keypair = signer(&args);
+    let sign_secretkey_bytes = sign_keypair.as_ref().map(|keypair| keypair.secret.to_bytes());
+    let sign_publickey_bytes = sign_keypair.as_ref().map(|keypair| keypair.public.to_bytes());
+    
     match args.command {
         // Physical acquisition
         Commands::Physical { inputfile, outputfile } => {
@@ -504,7 +509,7 @@ fn main() {
             let input_data = match File::open(&inputfile) {
                 Ok(f) => {
                     let mut input_data_map = HashMap::new();
-                    input_data_map.insert(object_header, f);
+                    input_data_map.insert(object_header.clone(), f);
                     input_data_map
                 },
                 Err(e) => {
@@ -526,7 +531,7 @@ fn main() {
 
             };
             match zffcreator.generate_files() {
-                Ok(()) => exit(EXIT_STATUS_SUCCESS),
+                Ok(()) => (),
                 Err(e) => {
                     println!("{ERROR_GENERATE_FILES}{e}");
                     exit(EXIT_STATUS_ERROR);
@@ -538,7 +543,7 @@ fn main() {
             let creator_params = ZffCreatorMetadataParams::with_data(encryption_key, sign_keypair, main_header, args.encrypted_header, args.description_notes);
             let output_filepath = outputfile;
             let mut input_data_map = HashMap::new();
-            input_data_map.insert(object_header, inputfiles);
+            input_data_map.insert(object_header.clone(), inputfiles);
             let mut zffcreator = match ZffCreator::new(
                 HashMap::<ObjectHeader, std::fs::File>::new(),
                 input_data_map,
@@ -555,7 +560,7 @@ fn main() {
                 eprintln!("{WARNING_UNACCESSABLE_LOGICAL_FILE}{unaccessable_file}");
             }
             match zffcreator.generate_files() {
-                Ok(()) => exit(EXIT_STATUS_SUCCESS),
+                Ok(()) => (),
                 Err(e) => {
                     eprintln!("{ERROR_GENERATE_FILES}{e}");
                     exit(EXIT_STATUS_ERROR);
@@ -569,7 +574,7 @@ fn main() {
                     let input_data = match File::open(&inputfile) {
                         Ok(f) => {
                             let mut input_data_map = HashMap::new();
-                            input_data_map.insert(object_header, f);
+                            input_data_map.insert(object_header.clone(), f);
                             input_data_map
                         },
                         Err(e) => {
@@ -587,7 +592,7 @@ fn main() {
                 },
                 ExtendSubcommands::Logical { inputfiles } => {
                     let mut input_data_map = HashMap::new();
-                    input_data_map.insert(object_header, inputfiles);
+                    input_data_map.insert(object_header.clone(), inputfiles);
                     match ZffExtender::new(append_files, HashMap::<ObjectHeader, std::fs::File>::new(), input_data_map, hash_types, encryption_key, sign_keypair, args.encrypted_header) {
                         Ok(extender) => extender,
                         Err(e) => {
@@ -598,12 +603,43 @@ fn main() {
                 }
             };
             match zffextender.extend() {
-                Ok(()) => exit(EXIT_STATUS_SUCCESS),
+                Ok(()) => (),
                 Err(e) => {
                     eprintln!("An error occurred while trying to extend the current files: {e}");
                     exit(EXIT_STATUS_ERROR);
                 }
             }
+        }
+    }
+
+    let args = Cli::parse();
+    output_information.chunk_size = 2 << (args.chunk_size.get_size()-1);
+    output_information.segment_size = args.segment_size.to_string();
+    output_information.unique_segment_identifier = unique_segment_identifier;
+    output_information.encryption_header = encryption_header;
+    output_information.compression_header = Some(compression_header);
+    output_information.signature_private_key = match signer(&args) {
+        None => None,
+        Some(keypair) => Some(base64::encode(keypair.secret.to_bytes())),
+    };
+    output_information.object_type = object_header.object_type();
+    output_information.extended = matches!(args.command, Commands::Extend { extend_command: _, append_files: _ });
+    output_information.description_header = Some(description_header(&args));
+    if let SignatureFlagValues::NoSignatures = args.sign_data { } else {
+        match args.sign_keypair {
+            None => output_information.signature_private_key = Some(base64::encode(sign_secretkey_bytes.unwrap())),
+            Some(_) => ()
+        }
+        output_information.signature_public_key = Some(base64::encode(sign_publickey_bytes.unwrap()));
+    }
+
+    match toml::Value::try_from(&output_information) {
+        Ok(info) => {
+            println!("{info}");
+            exit(EXIT_STATUS_SUCCESS);
+        },
+        Err(_) => {
+            exit(EXIT_STATUS_SUCCESS);
         }
     }
 }
