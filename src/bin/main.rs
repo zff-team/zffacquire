@@ -76,11 +76,11 @@ struct Cli {
     #[clap(short='T', long="compression-threshold", global=true, required=false, default_value=DEFAULT_COMPRESSION_RATIO_THRESHOLD)]
     compression_threshold: f32,
 
-    /// The segment size of the output-file(s). Default is 0 (=the output image will never be splitted into segments).
+    /// The segment size of the output-file(s). Default is 0 (=the output image will never be splitted into segments). This option will be ignored by the extend subcommand.
     #[clap(short='s', long="segment-size", global=true, required=false, default_value="0")]
     segment_size: String,
 
-    /// The chunk size. Default is 32kB. The chunksize have to be greater than the segment size.
+    /// The chunk size. Default is 32kB. The chunksize have to be greater than the segment size. This option will be ignored by the extend subcommand.
     #[clap(short='C', long, global=true, required=false, default_value="32KB", arg_enum)]
     chunk_size: ChunkSize,
 
@@ -92,15 +92,15 @@ struct Cli {
     #[clap(short='K', long="password-kdf", global=true, required=false, arg_enum, default_value="scrypt-aes256")]
     password_kdf: PasswordKdfValues,
 
-    /// Sets the encryption algorithm. Default is [aes256-gcm-siv].
+    /// Sets the encryption algorithm. Default is [aes256-gcm-siv]. Without the --encrypted-header option, only the data will be encrypted.
     #[clap(short='E', long="encryption-algorithm", global=true, required=false, arg_enum, default_value="aes256gcmsiv")]
     encryption_algorithm: EncryptionAlgorithmValues,
 
-    /// Encrypts the data AND parts of the main header (e.g. the "description fields", like 'examiner name', 'case number', ...)
+    /// Encrypts the data itself, and relevant metadata (e.g. the "description fields"; like 'examiner name', 'case number' or the "metadata of logical files", like 'filename', timestamps, ...).
     #[clap(short='H', long="encrypted-header", global=true, requires("encryption-password"))]
     encrypted_header: bool,
 
-    /// This option adds an additional hash algorithm to calculate. You can use this option multiple times.
+    /// This option adds an additional hash algorithm to calculate. You can use this option multiple times. If no algorithm is selected, zffacquire automatically calculates [blake2b512] hash values.
     #[clap(short='d', long="hash-algorithm", global=true, required=false, arg_enum, multiple_values=true)]
     hash_algorithm: Vec<HashAlgorithmValues>,
 
@@ -496,6 +496,9 @@ fn main() {
             HashAlgorithmValues::SHA512 => hash_types.push(HashType::SHA512),
             HashAlgorithmValues::SHA3_256 => hash_types.push(HashType::SHA3_256),
         }
+    }
+    if hash_types.is_empty() {
+        hash_types.push(HashType::Blake2b512);
     }
 
     let sign_keypair = signer(&args);
