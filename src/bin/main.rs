@@ -56,7 +56,7 @@ use rand::{Rng};
 use ed25519_dalek::Keypair;
 
 #[derive(Parser)]
-#[clap(about, version, author)]
+#[clap(about, version, author, override_usage="zffacquire <SUBCOMMAND> [OPTIONS]")]
 struct Cli {
 
     /// A general description of all data, which are inside the zff file(s).
