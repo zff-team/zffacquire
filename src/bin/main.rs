@@ -18,6 +18,7 @@ mod lib;
 use crate::lib::{
     hrs_parser,
     constants::*,
+    traits::*,
     OutputInfo,
 };
 use zff::{
@@ -444,7 +445,7 @@ fn main() {
             exit(EXIT_STATUS_ERROR);
         }
     };
-    let unique_segment_identifier: i64 = {
+    let mut unique_segment_identifier: i64 = {
         let mut rng = rand::thread_rng();
         rng.gen()
     };
@@ -609,12 +610,19 @@ fn main() {
                     exit(EXIT_STATUS_ERROR);
                 }
             }
+            unique_segment_identifier = zffextender.unique_segment_identifier();
         }
     }
 
     let args = Cli::parse();
-    output_information.chunk_size = 2 << (args.chunk_size.get_size()-1);
-    output_information.segment_size = args.segment_size.to_string();
+    let chunk_size: u64 = 2 << (args.chunk_size.get_size()-1);
+    output_information.chunk_size = format!("{} ({} bytes)", chunk_size.bytes_as_hrb(), chunk_size);
+    let segment_size = if segment_size == 0 {
+        u64::MAX
+    } else {
+        segment_size
+    };
+    output_information.segment_size = format!("{} ({} bytes)", segment_size.bytes_as_hrb(), segment_size);
     output_information.unique_segment_identifier = unique_segment_identifier;
     output_information.encryption_header = encryption_header;
     output_information.compression_header = Some(compression_header);

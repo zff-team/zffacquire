@@ -1,5 +1,6 @@
 // - modules
 pub mod constants;
+pub mod traits;
 
 // - internal
 use crate::HRS_PARSER_BASE;
@@ -13,7 +14,7 @@ fn string_to_str(s: String) -> &'static str {
 }
 
 pub(crate) struct OutputInfo {
-    pub chunk_size: u64,
+    pub chunk_size: String,
     pub segment_size: String,
     pub unique_segment_identifier: i64,
     pub encryption_header: Option<EncryptionHeader>,
@@ -28,7 +29,7 @@ pub(crate) struct OutputInfo {
 impl OutputInfo {
     pub fn new() -> OutputInfo {
         Self {
-            chunk_size: 0,
+            chunk_size: String::from(""),
             segment_size: String::from(""),
             unique_segment_identifier: 0,
             encryption_header: None,
