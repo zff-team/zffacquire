@@ -20,3 +20,10 @@ pub(crate) const HRS_PARSER_BASE: u64 = 1024;
 pub(crate) const SCRYPT_LOGN_RECOMMENDED: u8 = 15;
 pub(crate) const SCRYPT_R_RECOMMENDED: u32 = 1;
 pub(crate) const SCRYPT_P_RECOMMENDED: u32 = 1;
+
+// custom description header entry keys
+pub(crate) const DESCRIPTION_HEADER_CUSTOM_KEY_SIGNATURE_PUBKEY: &str = "signature_public_key";
+pub(crate) const TOOLNAME_KEY: &str = "extraction_tool_name";
+pub(crate) const TOOLNAME_VALUE: &str = env!("CARGO_PKG_NAME");
+pub(crate) const TOOLVERSION_KEY: &str = "extraction_tool_version";
+pub(crate) const TOOLVERSION_VALUE: &str = env!("CARGO_PKG_VERSION");

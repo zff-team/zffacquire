@@ -415,7 +415,7 @@ fn encryption_header(args: &Cli) -> Option<(EncryptionHeader, Vec<u8>)> {
     Some((encryption_header, encryption_key))
 }
 
-fn description_header(args: &Cli) -> DescriptionHeader {
+fn description_header(args: &Cli, custom: HashMap<String, String>) -> DescriptionHeader {
     let mut description_header = DescriptionHeader::new_empty(DEFAULT_HEADER_VERSION_DESCRIPTION_HEADER);
     if let Some(value) = &args.case_number {
         description_header.set_case_number(value);
@@ -429,6 +429,9 @@ fn description_header(args: &Cli) -> DescriptionHeader {
     if let Some(value) = &args.notes {
         description_header.set_notes(value);
     };
+    for (key, value) in custom {
+        description_header.custom_identifier_value(key, value);
+    }
     description_header
 }
 
@@ -457,6 +460,13 @@ fn main() {
         unique_segment_identifier);
     // --
 
+    // -- signatures
+    let sign_keypair = signer(&args);
+    let sign_secretkey_bytes = sign_keypair.as_ref().map(|keypair| keypair.secret.to_bytes());
+    let sign_publickey_bytes = sign_keypair.as_ref().map(|keypair| keypair.public.to_bytes());
+    let description_header_pubkey_entry = sign_publickey_bytes.as_ref().map(base64::encode);
+    // --
+
     // -- ZffCreator
     // --- object header
     let (encryption_header, encryption_key) = match encryption_header(&args) {
@@ -470,13 +480,23 @@ fn main() {
         SignatureFlagValues::PerChunkSignatures => SignatureFlag::PerChunkSignatures,
     };
 
+    // -- description header
+    let mut custom_entries = HashMap::new();
+    if let Some(pubkey_entry) = description_header_pubkey_entry {
+        custom_entries.insert(String::from(DESCRIPTION_HEADER_CUSTOM_KEY_SIGNATURE_PUBKEY), pubkey_entry);
+    }
+    custom_entries.insert(String::from(TOOLNAME_KEY), String::from(TOOLNAME_VALUE));
+    custom_entries.insert(String::from(TOOLVERSION_KEY), String::from(TOOLVERSION_VALUE));
+    let description_header = description_header(&args, custom_entries);
+    // --
+
     let object_header = {
         let object_number = match &args.command {
             Commands::Physical { inputfile: _, outputfile: _ } => INITIAL_OBJECT_NUMBER,
             Commands::Logical { inputfiles: _, outputfile: _ } => INITIAL_OBJECT_NUMBER,
             Commands::Extend { extend_command: _, append_files: _ } => INITIAL_OBJECT_NUMBER,
         };
-        let description_header = description_header(&args);
+
         let object_type = match &args.command {
             Commands::Physical { inputfile: _, outputfile: _ } => ObjectType::Physical,
             Commands::Logical { inputfiles: _, outputfile: _ } => ObjectType::Logical,
@@ -485,7 +505,7 @@ fn main() {
                 ExtendSubcommands::Logical { inputfiles: _ } => ObjectType::Logical,
             },
         };
-        ObjectHeader::new(DEFAULT_HEADER_VERSION_OBJECT_HEADER, object_number, encryption_header.clone(), compression_header.clone(), signature_flag, description_header, object_type)
+        ObjectHeader::new(DEFAULT_HEADER_VERSION_OBJECT_HEADER, object_number, encryption_header.clone(), compression_header.clone(), signature_flag, description_header.clone(), object_type)
     };
 
     let mut hash_types = Vec::new();
@@ -500,10 +520,6 @@ fn main() {
     if hash_types.is_empty() {
         hash_types.push(HashType::Blake2b512);
     }
-
-    let sign_keypair = signer(&args);
-    let sign_secretkey_bytes = sign_keypair.as_ref().map(|keypair| keypair.secret.to_bytes());
-    let sign_publickey_bytes = sign_keypair.as_ref().map(|keypair| keypair.public.to_bytes());
     
     match args.command {
         // Physical acquisition
@@ -635,7 +651,7 @@ fn main() {
     };
     output_information.object_type = object_header.object_type();
     output_information.extended = matches!(args.command, Commands::Extend { extend_command: _, append_files: _ });
-    output_information.description_header = Some(description_header(&args));
+    output_information.description_header = Some(description_header);
     if let SignatureFlagValues::NoSignatures = args.sign_data { } else {
         match args.sign_keypair {
             None => output_information.signature_private_key = Some(base64::encode(sign_secretkey_bytes.unwrap())),
