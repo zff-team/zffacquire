@@ -625,7 +625,7 @@ fn main() {
             match zffextender.extend() {
                 Ok(()) => (),
                 Err(e) => {
-                    eprintln!("An error occurred while trying to extend the current files: {e}");
+                    eprintln!("{ERROR_EXTEND_FILES}{e}");
                     exit(EXIT_STATUS_ERROR);
                 }
             }
@@ -635,13 +635,13 @@ fn main() {
 
     let args = Cli::parse();
     let chunk_size: u64 = 2 << (args.chunk_size.get_size()-1);
-    output_information.chunk_size = format!("{} ({} bytes)", chunk_size.bytes_as_hrb(), chunk_size);
+    output_information.chunk_size = format!("{} ({} {BYTES})", chunk_size.bytes_as_hrb(), chunk_size);
     let segment_size = if segment_size == 0 {
         u64::MAX
     } else {
         segment_size
     };
-    output_information.segment_size = format!("{} ({} bytes)", segment_size.bytes_as_hrb(), segment_size);
+    output_information.segment_size = format!("{} ({} {BYTES})", segment_size.bytes_as_hrb(), segment_size);
     output_information.unique_segment_identifier = unique_segment_identifier;
     output_information.encryption_header = encryption_header;
     output_information.compression_header = Some(compression_header);
