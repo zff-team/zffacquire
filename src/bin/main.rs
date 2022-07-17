@@ -519,10 +519,6 @@ fn main() {
             HashAlgorithmValues::Blake3 => hash_types.push(HashType::Blake3),
         }
     }
-
-    if args.hash_algorithm.is_empty() {
-        hash_types.push(HashType::Blake3);
-    }
     
     match args.command {
         // Physical acquisition
