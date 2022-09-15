@@ -1,9 +1,9 @@
 [package]
 name = "zffacquire"
 authors = ["ph0llux <ph0llux@pm.me>"]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
-rust-version = "1.58.1"
+rust-version = "1.60.0"
 license = "MIT OR Apache-2.0"
 description = "A command line utility for acquiring data into the forensic format Zff."
 readme = "README.md"
@@ -22,9 +22,17 @@ bench = true
 [dependencies]
 clap = { version = "3.1.10", features = [ "derive" ] }
 rand = "0.7.3"
-zff = { version="2.0.0" }
+zff = { version="2.0.1" }
 base64 = "0.13.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.5.8"
 #signing
 ed25519-dalek = { version = "1.0.1", features = [ "rand" ] }
+
+[profile.release]
+lto = true              # enables link time optimization
+panic = 'unwind'        # unwinds the stack if panic
+strip = "symbols"		# ... to reduce binary size ...
+debug = false           # I won't see any debug options in release mode.
+opt-level = 2           # optimized for speed.
+codegen-units = 1       # Set to 1 to allow for maximum size reduction optimizations - at the expense of the compile time.
