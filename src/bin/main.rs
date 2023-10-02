@@ -17,32 +17,28 @@ mod lib;
 // - internal
 use crate::lib::{
     hrs_parser,
+    parse_key_val,
     constants::*,
     traits::*,
     OutputInfo,
 };
 use zff::{
-    header::{CompressionHeader, EncryptionHeader, DescriptionHeader, MainHeader, ObjectHeader, ObjectType},
-    header::{KDFParameters, PBKDF2SHA256Parameters, ScryptParameters, PBEHeader},
+    header::{CompressionHeader, EncryptionHeader, DescriptionHeader, ObjectType},
+    header::{KDFParameters, PBKDF2SHA256Parameters, ScryptParameters, Argon2idParameters, PBEHeader, DeduplicationChunkMap, ObjectHeader, ObjectFlags},
     EncryptionAlgorithm,
     CompressionAlgorithm,
-    HashType,
     KDFScheme,
     PBEScheme,
-    ZffCreator,
-    ZffCreatorMetadataParams,
-    ZffExtender,
     Encryption,
     Signature,
-    SignatureFlag,
+    HashType,
+    io::zffwriter::{ZffWriterOptionalParameter, ZffWriter, ZffWriterOutput},
+    
     constants::{
         DEFAULT_COMPRESSION_RATIO_THRESHOLD,
         DEFAULT_HEADER_VERSION_COMPRESSION_HEADER,
         DEFAULT_HEADER_VERSION_DESCRIPTION_HEADER,
         DEFAULT_HEADER_VERSION_PBE_HEADER,
-        DEFAULT_HEADER_VERSION_ENCRYPTION_HEADER,
-        DEFAULT_HEADER_VERSION_MAIN_HEADER,
-        DEFAULT_HEADER_VERSION_OBJECT_HEADER,
         INITIAL_OBJECT_NUMBER,
     },
 };
@@ -51,10 +47,12 @@ use zff::{
 use clap::{
     Parser,
     Subcommand,
-    ArgEnum,
+    ValueEnum,
+    //builder::TypedValueParser as _,
 };
 use rand::{Rng};
-use ed25519_dalek::Keypair;
+use ed25519_dalek::SigningKey;
+use log::{LevelFilter, error, debug, info};
 
 #[derive(Parser)]
 #[clap(about, version, author, override_usage="zffacquire <SUBCOMMAND> [OPTIONS]")]
@@ -65,7 +63,7 @@ struct Cli {
     description_notes: Option<String>,
 
     /// sets the compression algorithm. Default is zstd.
-    #[clap(short='z', long="compression-algorithm", global=true, required=false, arg_enum, default_value="zstd")]
+    #[clap(short='z', long="compression-algorithm", global=true, required=false, value_enum, default_value="zstd")]
     compression_algorithm: CompressionAlgorithmValues,
 
     /// sets the compression level. Default is 3. This option doesn't has any effect while using the lz4 compression algorithm.
@@ -76,41 +74,51 @@ struct Cli {
     #[clap(short='T', long="compression-threshold", global=true, required=false, default_value=DEFAULT_COMPRESSION_RATIO_THRESHOLD)]
     compression_threshold: f32,
 
-    /// The segment size of the output-file(s). Default is 0 (=the output image will never be splitted into segments). This option will be ignored by the extend subcommand.
-    #[clap(short='s', long="segment-size", global=true, required=false, default_value="0")]
-    segment_size: String,
+    /// The segment size of the output-file(s). Default is 0 (=the output image will never be splitted into segments).
+    #[clap(short='s', long="segment-size", global=true, required=false)]
+    segment_size: Option<String>,
 
     /// The chunk size. Default is 32kB. The chunksize have to be greater than the segment size. This option will be ignored by the extend subcommand.
-    #[clap(short='C', long, global=true, required=false, default_value="32KB", arg_enum)]
-    chunk_size: ChunkSize,
+    #[clap(short='C', long, global=true, required=false, default_value="32KB")]
+    chunk_size: String,
 
-    /// Sets an encryption password
-    #[clap(short='p', long="encryption-password", global=true, required=false)]
-    encryption_password: Option<String>,
+    /// The chunk map size. Default is 32kB.
+    #[clap(short='M', long, global=true, required=false, default_value="32KB")]
+    chunkmap_size: String,
 
+    /// This option activates the deduplication feature using an on-disk buffer (currently, a temporary redb-database will be used).
+    #[clap(short='r', long, global=true, required=false, conflicts_with="in_memory_chunk_deduplication")]
+    on_disk_chunk_deduplication: Option<PathBuf>,
+
+    /// This option activates the deduplication feature using an in-memory buffer.
+    #[clap(short='m', long, global=true, required=false, conflicts_with="on_disk_chunk_deduplication")]
+    in_memory_chunk_deduplication: bool,
+
+    /// encrypts the the zff object.
+    #[clap(short='p', long="encrypt", global=true, required=false)]
+    encrypt: bool,
+
+    //TODO: Depends on "encrypt"...this has to be configured through clap.
     /// Sets the key derivation function for the password. Default is [scrypt-aes256].
-    #[clap(short='K', long="password-kdf", global=true, required=false, arg_enum, default_value="scrypt-aes256")]
+    #[clap(short='K', long="password-kdf", global=true, required=false, value_enum, default_value="scrypt-aes256")]
     password_kdf: PasswordKdfValues,
 
-    /// Sets the encryption algorithm. Default is [aes256-gcm-siv]. Without the --encrypted-header option, only the data will be encrypted.
-    #[clap(short='E', long="encryption-algorithm", global=true, required=false, arg_enum, default_value="aes256gcmsiv")]
+    //TODO: Depends on "encrypt"...this has to be configured through clap.
+    /// Sets the encryption algorithm. Default is [chacha20poly1305].
+    #[clap(short='E', long="encryption-algorithm", global=true, required=false, value_enum, default_value="chacha20poly1305")]
     encryption_algorithm: EncryptionAlgorithmValues,
 
-    /// Encrypts the data itself, and relevant metadata (e.g. the "description fields"; like 'examiner name', 'case number' or the "metadata of logical files", like 'filename', timestamps, ...).
-    #[clap(short='H', long="encrypted-header", global=true, requires("encryption-password"))]
-    encrypted_header: bool,
-
     /// This option adds an additional hash algorithm to calculate. You can use this option multiple times. If no algorithm is selected, zffacquire automatically calculates [blake3] hash values.
-    #[clap(short='d', long="hash-algorithm", global=true, required=false, arg_enum, multiple_values=true, default_value="blake3")]
+    #[clap(short='d', long="hash-algorithm", global=true, required=false, value_enum, default_value="blake3")]
     hash_algorithm: Vec<HashAlgorithmValues>,
 
-    /// Sign all data with an autogenerated or given secret EdDSA key. You have to set, if only the hash values should be signed, or if every chunk should be signed.
-    #[clap(short='S', long="sign-data", global=true, arg_enum, default_value="none")]
-    sign_data: SignatureFlagValues,
+    /// Sign hash values of data with an autogenerated or given secret EdDSA key.
+    #[clap(short='S', long="sign-data", global=true)]
+    sign_data: bool,
 
-    /// Your secret EdDSA key, base64 formatted.
-    #[clap(short='k', long="eddsa-keypair", global=true, required=false)]
-    sign_keypair: Option<String>,
+    /// Your secret EdDSA key, base64 formatted. Could be a Secret key or a keypair.
+    #[clap(short='k', long="eddsa-key", global=true, required=false)]
+    sign_key: Option<String>,
 
     /// The case number.
     #[clap(short='c', long="case-number", global=true, required=false)]
@@ -128,6 +136,14 @@ struct Cli {
     #[clap(short='n', long="notes", global=true, required=false)]
     notes: Option<String>,
 
+    /// Custom description values
+    #[arg(short = 'O', long="custom-description", value_parser = parse_key_val::<String, String>)]
+    custom_descriptions: Vec<(String, String)>,
+
+    /// The Loglevel
+    #[clap(short='L', long="log-level", value_enum, default_value="info")]
+    log_level: LogLevel,
+
     #[clap(subcommand)]
     command: Commands,
 }
@@ -141,7 +157,7 @@ enum Commands {
         #[clap(short='i', long="inputfile", required=true)]
         inputfile: PathBuf,
 
-        /// The the name/path of the output-file WITHOUT file extension. E.g. \"/home/ph0llux/sda_dump\". File extension will be added automatically. This field is REQUIRED.
+        /// The the name/path of the output-file WITHOUT file extension. E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
         #[clap(short='o', long="outputfile", global=true, required=false)]
         outputfile: String,
     },
@@ -149,10 +165,10 @@ enum Commands {
     #[clap(arg_required_else_help=true)]
     Logical {
         /// The input folders. You can use this option multiple times. This field is REQUIRED.
-        #[clap(short='i', long="inputfiles", required=true, multiple_values=true)]
+        #[clap(short='i', long="inputfiles", required=true)]
         inputfiles: Vec<PathBuf>,
 
-        /// The the name/path of the output-file WITHOUT file extension. E.g. \"/home/ph0llux/sda_dump\". File extension will be added automatically. This field is REQUIRED.
+        /// The the name/path of the output-file WITHOUT file extension. E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
         #[clap(short='o', long="outputfile", global=true, required=false)]
         outputfile: String,
     },
@@ -161,7 +177,7 @@ enum Commands {
     #[clap(arg_required_else_help=true)]
     Extend {
         /// Your zXX files, which should be extended.
-        #[clap(short='a', long="append", global=true, multiple_values=true)]
+        #[clap(short='a', long="append", global=true)]
         append_files: Vec<PathBuf>,
 
         #[clap(subcommand)]
@@ -187,7 +203,16 @@ enum ExtendSubcommands {
     },
 }
 
-#[derive(ArgEnum, Clone)]
+#[derive(ValueEnum, Clone)]
+enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace
+}
+
+#[derive(ValueEnum, Clone)]
 enum HashAlgorithmValues {
     Blake2b512,
     SHA256,
@@ -196,7 +221,7 @@ enum HashAlgorithmValues {
     Blake3,
 }
 
-#[derive(ArgEnum, Clone)]
+#[derive(ValueEnum, Clone)]
 enum CompressionAlgorithmValues {
     /// No compression is used
     None,
@@ -206,93 +231,46 @@ enum CompressionAlgorithmValues {
     Lz4,
 }
 
-#[derive(ArgEnum, Clone)]
+#[derive(ValueEnum, Clone)]
 enum PasswordKdfValues {
     Pbkdf2Sha256Aes128,
     Pbkdf2Sha256Aes256,
     ScryptAes128,
     ScryptAes256,
+    Argon2idAes128,
+    Argon2idAes256,
 }
 
-#[derive(ArgEnum, Clone)]
+#[derive(ValueEnum, Clone)]
 enum EncryptionAlgorithmValues {
-    AES128GCMSIV,
-    AES256GCMSIV,
+    AES128GCM,
+    AES256GCM,
+    CHACHA20POLY1305,
 }
 
-#[derive(ArgEnum, Clone)]
-enum ChunkSize {
-    #[clap(name="256B")]
-    CS8,
-    #[clap(name="512B")]
-    CS9,
-    #[clap(name="1KB")]
-    CS10,
-    #[clap(name="2KB")]
-    CS11,
-    #[clap(name="4KB")]
-    CS12,
-    #[clap(name="8KB")]
-    CS13,
-    #[clap(name="16KB")]
-    CS14,
-    #[clap(name="32KB")]
-    CS15,
-    #[clap(name="64KB")]
-    CS16,
-    #[clap(name="128KB")]
-    CS17,
-    #[clap(name="256KB")]
-    CS18,
-    #[clap(name="512KB")]
-    CS19,
-    #[clap(name="1MB")]
-    CS20,
-}
-
-impl ChunkSize {
-    fn get_size(&self) -> u8 {
-        match self {
-            ChunkSize::CS8 => 8,
-            ChunkSize::CS9 => 9,
-            ChunkSize::CS10 => 10,
-            ChunkSize::CS11 => 11,
-            ChunkSize::CS12 => 12,
-            ChunkSize::CS13 => 13,
-            ChunkSize::CS14 => 14,
-            ChunkSize::CS15 => 15,
-            ChunkSize::CS16 => 16,
-            ChunkSize::CS17 => 17,
-            ChunkSize::CS18 => 18,
-            ChunkSize::CS19 => 19,
-            ChunkSize::CS20 => 20,
-        }
+fn signer(args: &Cli) -> Option<SigningKey> {
+    if !args.sign_data {
+        info!("Signing of data has been disabled.");
+        return None;
     }
-}
 
-#[derive(ArgEnum, Clone)]
-enum SignatureFlagValues {
-    #[clap(name="none")]
-    NoSignatures,
-    #[clap(name="hash_value_signature_only")]
-    HashValueSignatureOnly,
-    #[clap(name="per_chunk_signatures")]
-    PerChunkSignatures,
-}
-
-fn signer(args: &Cli) -> Option<Keypair> {
-    if let SignatureFlagValues::NoSignatures = args.sign_data { return None }
-
-    match &args.sign_keypair {
-        None => Some(Signature::new_keypair()),
-        Some(value) => match Signature::new_keypair_from_base64(value.trim()) {
-            Ok(keypair) => Some(keypair),
+    let sign_key = match &args.sign_key {
+        None => Signature::new_signing_key(),
+        Some(value) => match Signature::new_signingkey_from_base64(value.trim()) {
+            Ok(keypair) => keypair,
             Err(_) => {
-                println!("{}", ERROR_PARSE_KEY);
+                error!("{}", ERROR_PARSE_KEY);
                 exit(EXIT_STATUS_ERROR);
             }
         }
+    };
+    if args.sign_key.is_some() {
+        debug!("Using private sign key {}", base64::encode(sign_key.to_bytes()));
+    } else {
+        info!("Private signature key is {}", base64::encode(sign_key.to_bytes()));
     }
+    info!("Public signature key is {}", base64::encode(sign_key.verifying_key()));
+    Some(sign_key)
 }
 
 fn compression_header(args: &Cli) -> CompressionHeader {
@@ -301,42 +279,74 @@ fn compression_header(args: &Cli) -> CompressionHeader {
         CompressionAlgorithmValues::Zstd => CompressionAlgorithm::Zstd,
         CompressionAlgorithmValues::Lz4 => CompressionAlgorithm::Lz4,
     };
+
     if args.compression_level > 9 {
-        eprintln!("error: Invalid value for '--compression-level <COMPRESSION_LEVEL>': number <{}> too large to fit in target type. (Possible values are 1-9)", args.compression_level);
+        error!("Invalid value for '--compression-level <COMPRESSION_LEVEL>': number <{}> too large to fit in target type. (Possible values are 1-9)", args.compression_level);
         exit(EXIT_STATUS_ERROR);    
     } else if args.compression_level  < 1 {
-        eprintln!("error: Invalid value for '--compression-level <COMPRESSION_LEVEL>': number <{}> too small to fit in target type. (Possible values are 1-9)", args.compression_level);
+        error!("Invalid value for '--compression-level <COMPRESSION_LEVEL>': number <{}> too small to fit in target type. (Possible values are 1-9)", args.compression_level);
         exit(EXIT_STATUS_ERROR);
     }
+    
+    if compression_algorithm == CompressionAlgorithm::None {
+        info!("Data will not be compressed");
+    } else {
+        info!("Data will be compressed with {} and level {}", compression_algorithm.to_string(), args.compression_level);
+    }
+
     CompressionHeader::new(DEFAULT_HEADER_VERSION_COMPRESSION_HEADER, compression_algorithm, args.compression_level, args.compression_threshold)
 }
 
 /// returns the encryption header and the encryption key.
-fn encryption_header(args: &Cli) -> Option<(EncryptionHeader, Vec<u8>)> {
-    let password = args.encryption_password.as_ref()?;
+fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
+    if !args.encrypt {
+        info!("Object will not be encrypted.");
+        return None;
+    }
+    let password = match rpassword::prompt_password("Enter the encryption password: ") {
+        Ok(pw) => pw,
+        Err(e) => {
+            error!("An error occured while trying to read your password...please use only UTF8 valid characters:\n{e}");
+            exit(EXIT_STATUS_ERROR);
+        }
+    };
+
     let (kdf, pbes) = match args.password_kdf {
         PasswordKdfValues::Pbkdf2Sha256Aes128 => (KDFScheme::PBKDF2SHA256, PBEScheme::AES128CBC),
         PasswordKdfValues::Pbkdf2Sha256Aes256 => (KDFScheme::PBKDF2SHA256, PBEScheme::AES256CBC),
         PasswordKdfValues::ScryptAes128 => (KDFScheme::Scrypt, PBEScheme::AES128CBC),
         PasswordKdfValues::ScryptAes256 => (KDFScheme::Scrypt, PBEScheme::AES256CBC),
+        PasswordKdfValues::Argon2idAes128 => (KDFScheme::Argon2id, PBEScheme::AES256CBC),
+        PasswordKdfValues::Argon2idAes256 => (KDFScheme::Argon2id, PBEScheme::AES256CBC),
     };
+    info!("Using password based encryption with {}-{}.", kdf, pbes);
+
     let encryption_algorithm = match args.encryption_algorithm {
-        EncryptionAlgorithmValues::AES128GCMSIV => EncryptionAlgorithm::AES128GCMSIV,
-        EncryptionAlgorithmValues::AES256GCMSIV => EncryptionAlgorithm::AES256GCMSIV,
+        EncryptionAlgorithmValues::AES128GCM => EncryptionAlgorithm::AES128GCM,
+        EncryptionAlgorithmValues::AES256GCM => EncryptionAlgorithm::AES256GCM,
+        EncryptionAlgorithmValues::CHACHA20POLY1305 => EncryptionAlgorithm::CHACHA20POLY1305,
     };
+    info!("Using {} encrpytion algorithm.", encryption_algorithm);
+
     let encryption_key = match encryption_algorithm {
-        EncryptionAlgorithm::AES128GCMSIV => Encryption::gen_random_key(128),
-        EncryptionAlgorithm::AES256GCMSIV => Encryption::gen_random_key(256),
+        EncryptionAlgorithm::AES128GCM => Encryption::gen_random_key(128),
+        EncryptionAlgorithm::AES256GCM => Encryption::gen_random_key(256),
         _ => {
-            println!("{}", ERROR_UNKNOWN_ENCRYPTION_ALGORITHM);
+            error!("{}", ERROR_UNKNOWN_ENCRYPTION_ALGORITHM);
             exit(EXIT_STATUS_ERROR)
         },
     };
+    debug!("Using encryption key {}", base64::encode(encryption_key.clone()));
+
     let pbe_nonce = Encryption::gen_random_iv();
+    debug!("Used pbe: nonce {}", base64::encode(pbe_nonce));
+
     let salt = Encryption::gen_random_salt();
+    debug!("Used salt: {}", base64::encode(salt));
+    
     let (pbe_header, encrypted_encryption_key) = match kdf {
         KDFScheme::PBKDF2SHA256 => {
-            let iterations = 256000;
+            let iterations = 310000;
             let kdf_parameters = KDFParameters::PBKDF2SHA256Parameters(PBKDF2SHA256Parameters::new(iterations, salt));
             let pbe_header = PBEHeader::new(DEFAULT_HEADER_VERSION_PBE_HEADER, kdf, pbes.clone(), kdf_parameters, pbe_nonce);
             let encrypted_encryption_key = match pbes {
@@ -349,7 +359,7 @@ fn encryption_header(args: &Cli) -> Option<(EncryptionHeader, Vec<u8>)> {
                     ) {
                     Ok(val) => val,
                     Err(_) => {
-                        println!("{}", ERROR_ENCRYPT_KEY);
+                        error!("{}", ERROR_ENCRYPT_KEY);
                         exit(EXIT_STATUS_ERROR);
                     },
                 },
@@ -362,12 +372,12 @@ fn encryption_header(args: &Cli) -> Option<(EncryptionHeader, Vec<u8>)> {
                     ) {
                     Ok(val) => val,
                     Err(_) => {
-                        println!("{}", ERROR_ENCRYPT_KEY);
+                        error!("{}", ERROR_ENCRYPT_KEY);
                         exit(EXIT_STATUS_ERROR);
                     }
                 },
                 _ => {
-                    println!("{}", ERROR_UNKNOWN_PASSWORD_KDF);
+                    error!("{}", ERROR_UNKNOWN_PASSWORD_KDF);
                     exit(EXIT_STATUS_ERROR)
                 },
             };
@@ -383,40 +393,71 @@ fn encryption_header(args: &Cli) -> Option<(EncryptionHeader, Vec<u8>)> {
                 PBEScheme::AES128CBC => match Encryption::encrypt_scrypt_aes128cbc(logn, r, p, &salt, &pbe_nonce, password.trim(), &encryption_key) {
                     Ok(val) => val,
                     Err(_) => {
-                        println!("{}", ERROR_ENCRYPT_KEY);
+                        error!("{}", ERROR_ENCRYPT_KEY);
                         exit(EXIT_STATUS_ERROR);
                     }
                 },
                 PBEScheme::AES256CBC => match Encryption::encrypt_scrypt_aes256cbc(logn, r, p, &salt, &pbe_nonce, password.trim(), &encryption_key) {
                     Ok(val) => val,
                     Err(_) => {
-                        println!("{}", ERROR_ENCRYPT_KEY);
+                        error!("{}", ERROR_ENCRYPT_KEY);
                         exit(EXIT_STATUS_ERROR);
                     }
                 },
                 _ => {
-                    println!("{}", ERROR_UNKNOWN_PASSWORD_KDF);
+                    error!("{}", ERROR_UNKNOWN_PASSWORD_KDF);
+                    exit(EXIT_STATUS_ERROR)
+                },
+            };
+            (pbe_header, encrypted_encryption_key)
+        },
+        KDFScheme::Argon2id => {
+            let mem_cost = ARGON_MEM_COST_RECOMMENDED;
+            let lanes = ARGON_LANES_RECOMMENDED;
+            let iterations = ARGON_ITERATIONS_RECOMMENDED;
+            let kdf_parameters = KDFParameters::Argon2idParameters(Argon2idParameters::new(mem_cost, lanes, iterations, salt));
+            let pbe_header = PBEHeader::new(DEFAULT_HEADER_VERSION_PBE_HEADER, kdf, pbes.clone(), kdf_parameters, pbe_nonce);
+            let encrypted_encryption_key = match pbes {
+                PBEScheme::AES128CBC => match Encryption::encrypt_argon2_aes128cbc(
+                    mem_cost, lanes, iterations, &salt, &pbe_nonce, password.trim(), &encryption_key) {
+                    Ok(val) => val,
+                    Err(_) => {
+                        error!("{}", ERROR_ENCRYPT_KEY);
+                        exit(EXIT_STATUS_ERROR);
+                    }
+                },
+                PBEScheme::AES256CBC => match Encryption::encrypt_argon2_aes256cbc(
+                    mem_cost, lanes, iterations, &salt, &pbe_nonce, password.trim(), &encryption_key) {
+                    Ok(val) => val,
+                    Err(_) => {
+                        error!("{}", ERROR_ENCRYPT_KEY);
+                        exit(EXIT_STATUS_ERROR);
+                    }
+                },
+                _ => {
+                    error!("{}", ERROR_UNKNOWN_PASSWORD_KDF);
                     exit(EXIT_STATUS_ERROR)
                 },
             };
             (pbe_header, encrypted_encryption_key)
         },
         _ => {
-            println!("{}", ERROR_UNKNOWN_PASSWORD_KDF);
+            error!("{}", ERROR_UNKNOWN_PASSWORD_KDF);
             exit(EXIT_STATUS_ERROR)
         },
     };
-    let encryption_header = EncryptionHeader::new(
-        DEFAULT_HEADER_VERSION_ENCRYPTION_HEADER,
-        pbe_header,
-        encryption_algorithm,
-        encrypted_encryption_key,
-        Encryption::gen_random_header_nonce()
-        );
-    Some((encryption_header, encryption_key))
+    let mut encryption_header = EncryptionHeader::new(pbe_header, encryption_algorithm, encrypted_encryption_key);
+    match encryption_header.decrypt_encryption_key(password) {
+        Ok(_) => (),
+        Err(e) => {
+            error!("{ERROR_ENCRYPT_KEY}:\n{e}");
+            exit(EXIT_STATUS_ERROR);
+        }
+    }
+    Some(encryption_header)
 }
 
-fn description_header(args: &Cli, custom: HashMap<String, String>) -> DescriptionHeader {
+fn object_description_header(args: &Cli) -> DescriptionHeader {
     let mut description_header = DescriptionHeader::new_empty(DEFAULT_HEADER_VERSION_DESCRIPTION_HEADER);
     if let Some(value) = &args.case_number {
         description_header.set_case_number(value);
@@ -430,84 +471,78 @@ fn description_header(args: &Cli, custom: HashMap<String, String>) -> Descriptio
     if let Some(value) = &args.notes {
         description_header.set_notes(value);
     };
-    for (key, value) in custom {
+    for (key, value) in &args.custom_descriptions {
         description_header.custom_identifier_value(key, value);
     }
     description_header
 }
 
-fn main() {
-    let args = Cli::parse();
-    let mut output_information = OutputInfo::new();
+fn setup_optional_parameter(args: &Cli) -> ZffWriterOptionalParameter {
+    let mut rng = rand::thread_rng();
 
-    // -- MainHeader:
-    let chunk_size = &args.chunk_size.get_size();
-    let segment_size = match hrs_parser(&args.segment_size) {
-        Some(val) => val,
+    let description_notes = &args.description_notes;
+    let sign_keypair = signer(args);
+    let target_segment_size = if let Some(segment_size) = &args.segment_size {
+        match hrs_parser(segment_size) {
+            Some(val) => Some(val),
+            None => {
+                error!("{}{}", ERROR_UNPARSABLE_SEGMENT_SIZE_VALUE, segment_size);
+                exit(EXIT_STATUS_ERROR);
+            }
+        }
+    } else {
+        None
+    };
+
+    let chunkmap_size = match hrs_parser(&args.chunkmap_size) {
+        Some(val) => Some(val),
         None => {
-            println!("{}{}", ERROR_UNPARSABLE_SEGMENT_SIZE_VALUE, &args.segment_size);
+            error!("{}{}", ERROR_UNPARSABLE_CHUNKMAP_SIZE_VALUE, &args.chunkmap_size);
             exit(EXIT_STATUS_ERROR);
         }
     };
-    let mut unique_segment_identifier: i64 = {
-        let mut rng = rand::thread_rng();
-        rng.gen()
+
+    let deduplication_chunkmap = if args.in_memory_chunk_deduplication {
+        Some(DeduplicationChunkMap::new_in_memory_map())
+    } else if let Some(path) = &args.on_disk_chunk_deduplication {
+        let map = match DeduplicationChunkMap::new_from_path(path) {
+            Ok(map) => map,
+            Err(e) => {
+                error!("cannot create deduplication chunkmap: {e}");
+                exit(EXIT_STATUS_ERROR);
+            }
+        };
+        Some(map)
+    } else {
+        None
     };
 
-    let main_header = MainHeader::new(
-        DEFAULT_HEADER_VERSION_MAIN_HEADER,
-        *chunk_size,
-        segment_size,
-        unique_segment_identifier);
-    // --
+    let unique_identifier = rng.gen();
 
-    // -- signatures
-    let sign_keypair = signer(&args);
-    let sign_secretkey_bytes = sign_keypair.as_ref().map(|keypair| keypair.secret.to_bytes());
-    let sign_publickey_bytes = sign_keypair.as_ref().map(|keypair| keypair.public.to_bytes());
-    let description_header_pubkey_entry = sign_publickey_bytes.as_ref().map(base64::encode);
-    // --
-
-    // -- ZffCreator
-    // --- object header
-    let (encryption_header, encryption_key) = match encryption_header(&args) {
-        Some((header, key)) => (Some(header), Some(key)),
-        None => (None, None)
-    };
-    let compression_header = compression_header(&args);
-    let signature_flag = match &args.sign_data {
-        SignatureFlagValues::NoSignatures => SignatureFlag::NoSignatures,
-        SignatureFlagValues::HashValueSignatureOnly => SignatureFlag::HashValueSignatureOnly,
-        SignatureFlagValues::PerChunkSignatures => SignatureFlag::PerChunkSignatures,
-    };
-
-    // -- description header
-    let mut custom_entries = HashMap::new();
-    if let Some(pubkey_entry) = description_header_pubkey_entry {
-        custom_entries.insert(String::from(DESCRIPTION_HEADER_CUSTOM_KEY_SIGNATURE_PUBKEY), pubkey_entry);
+    ZffWriterOptionalParameter {
+        signature_key: sign_keypair,
+        target_segment_size,
+        chunkmap_size,
+        deduplication_chunkmap,
+        unique_identifier,
+        description_notes: description_notes.clone(),
     }
-    custom_entries.insert(String::from(TOOLNAME_KEY), String::from(TOOLNAME_VALUE));
-    custom_entries.insert(String::from(TOOLVERSION_KEY), String::from(TOOLVERSION_VALUE));
-    let description_header = description_header(&args, custom_entries);
-    // --
+}
 
-    let object_header = {
-        let object_number = match &args.command {
-            Commands::Physical { inputfile: _, outputfile: _ } => INITIAL_OBJECT_NUMBER,
-            Commands::Logical { inputfiles: _, outputfile: _ } => INITIAL_OBJECT_NUMBER,
-            Commands::Extend { extend_command: _, append_files: _ } => INITIAL_OBJECT_NUMBER,
-        };
+fn main() {
+    let args = Cli::parse();
 
-        let object_type = match &args.command {
-            Commands::Physical { inputfile: _, outputfile: _ } => ObjectType::Physical,
-            Commands::Logical { inputfiles: _, outputfile: _ } => ObjectType::Logical,
-            Commands::Extend { extend_command, append_files: _ } => match extend_command {
-                ExtendSubcommands::Physical { inputfile: _ } => ObjectType::Physical,
-                ExtendSubcommands::Logical { inputfiles: _ } => ObjectType::Logical,
-            },
-        };
-        ObjectHeader::new(DEFAULT_HEADER_VERSION_OBJECT_HEADER, object_number, encryption_header.clone(), compression_header.clone(), signature_flag, description_header.clone(), object_type)
+    let log_level = match args.log_level {
+        LogLevel::Error => LevelFilter::Error,
+        LogLevel::Warn => LevelFilter::Warn,
+        LogLevel::Info => LevelFilter::Info,
+        LogLevel::Debug => LevelFilter::Debug,
+        LogLevel::Trace => LevelFilter::Trace,
     };
+    env_logger::builder()
+        .format_timestamp_nanos()
+        .filter_level(log_level)
+        .init();
 
     let mut hash_types = Vec::new();
     for htype in &args.hash_algorithm {
@@ -519,153 +554,70 @@ fn main() {
             HashAlgorithmValues::Blake3 => hash_types.push(HashType::Blake3),
         }
     }
-    
-    match args.command {
-        // Physical acquisition
+
+    let encryption_header = encryption_header(&args);
+    let sign_keypair = signer(&args);
+    let flags = ObjectFlags {
+        encryption: encryption_header.is_some(),
+        sign_hash: sign_keypair.is_some(),
+        passive_object: false, //currently map-objects are not supported by zffacquire, so every object is an active object.
+    };
+
+    match &args.command {
         Commands::Physical { inputfile, outputfile } => {
-            let creator_params = ZffCreatorMetadataParams::with_data(encryption_key, sign_keypair, main_header, args.encrypted_header, args.description_notes);
-            let output_filepath = outputfile;
-            let input_data = match File::open(&inputfile) {
-                Ok(f) => {
-                    let mut input_data_map = HashMap::new();
-                    input_data_map.insert(object_header.clone(), f);
-                    input_data_map
-                },
-                Err(e) => {
-                    println!("{}{}\n{}", ERROR_OPEN_INPUT_FILE, inputfile.to_string_lossy(), e);
+            let chunk_size = match hrs_parser(&args.chunk_size) {
+                Some(val) => val,
+                None => {
+                    error!("Cannot parse {}, please enter a valid size (e.g. 32K, 40k, 10M, ...)", args.chunk_size);
                     exit(EXIT_STATUS_ERROR);
                 }
             };
-            let mut zffcreator = match ZffCreator::new(
-                                            input_data,
-                                            HashMap::new(), 
-                                            hash_types,
-                                            output_filepath,
-                                            creator_params) {
-                Ok(zffcreator) => zffcreator,
-                Err(e) => {
-                    eprintln!("{ERROR_CREATE_OBJECT_ENCODER}{e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
 
-            };
-            match zffcreator.generate_files() {
-                Ok(()) => (),
+            let obj_header = ObjectHeader::new(
+                INITIAL_OBJECT_NUMBER,
+                encryption_header,
+                chunk_size,
+                compression_header(&args),
+                object_description_header(&args),
+                ObjectType::Physical,
+                flags,
+                );
+
+            let file = match File::open(inputfile) {
+                Ok(file) => file,
                 Err(e) => {
-                    println!("{ERROR_GENERATE_FILES}{e}");
+                    let inputfile = inputfile.to_string_lossy();
+                    error!("Following error occurred while trying to open {inputfile}:\n{e}");
                     exit(EXIT_STATUS_ERROR);
                 }
-            }
-        },
-        //logical acquisition
-        Commands::Logical { inputfiles, outputfile } => {
-            let creator_params = ZffCreatorMetadataParams::with_data(encryption_key, sign_keypair, main_header, args.encrypted_header, args.description_notes);
-            let output_filepath = outputfile;
-            let mut input_data_map = HashMap::new();
-            input_data_map.insert(object_header.clone(), inputfiles);
-            let mut zffcreator = match ZffCreator::new(
-                HashMap::<ObjectHeader, std::fs::File>::new(),
-                input_data_map,
+            };
+
+            let mut physical_objects = HashMap::new();
+            physical_objects.insert(obj_header, file);
+            
+            let mut zw = match ZffWriter::new(
+                physical_objects,
+                HashMap::new(),
                 hash_types,
-                output_filepath,
-                creator_params) {
-                Ok(zffcreator) => zffcreator,
+                ZffWriterOutput::NewContainer(outputfile.into()),
+                setup_optional_parameter(&args),
+                ) {
+                Ok(zw) => zw,
                 Err(e) => {
-                    eprintln!("{ERROR_CREATE_OBJECT_ENCODER}{e}");
+                    error!("An error occured while trying to create the ZffWriter object:\n{e}");
                     exit(EXIT_STATUS_ERROR);
                 }
             };
-            for unaccessable_file in zffcreator.unaccessable_files() {
-                eprintln!("{WARNING_UNACCESSABLE_LOGICAL_FILE}{unaccessable_file}");
-            }
-            match zffcreator.generate_files() {
-                Ok(()) => (),
-                Err(e) => {
-                    eprintln!("{ERROR_GENERATE_FILES}{e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            }
-        },
-        //Extension
-        Commands::Extend { extend_command, append_files } => {
-            let mut zffextender = match extend_command {
-                ExtendSubcommands::Physical { inputfile } => {
-                    let input_data = match File::open(&inputfile) {
-                        Ok(f) => {
-                            let mut input_data_map = HashMap::new();
-                            input_data_map.insert(object_header.clone(), f);
-                            input_data_map
-                        },
-                        Err(e) => {
-                            println!("{}{}\n{}", ERROR_OPEN_INPUT_FILE, inputfile.to_string_lossy(), e);
-                            exit(EXIT_STATUS_ERROR);
-                        }
-                    };
-                    match ZffExtender::new(append_files, input_data, HashMap::new(), hash_types, encryption_key, sign_keypair, args.encrypted_header) {
-                        Ok(extender) => extender,
-                        Err(e) => {
-                            eprintln!("{e}");
-                            exit(EXIT_STATUS_ERROR);
-                        }
-                    }
-                },
-                ExtendSubcommands::Logical { inputfiles } => {
-                    let mut input_data_map = HashMap::new();
-                    input_data_map.insert(object_header.clone(), inputfiles);
-                    match ZffExtender::new(append_files, HashMap::<ObjectHeader, std::fs::File>::new(), input_data_map, hash_types, encryption_key, sign_keypair, args.encrypted_header) {
-                        Ok(extender) => extender,
-                        Err(e) => {
-                            eprintln!("{e}");
-                            exit(EXIT_STATUS_ERROR);
-                        }
-                    }
-                }
+
+            if let Err(e) = zw.generate_files() {
+                error!("An error occured while filling the zff container:\n {e}");
+                exit(EXIT_STATUS_ERROR);
             };
-            match zffextender.extend() {
-                Ok(()) => (),
-                Err(e) => {
-                    eprintln!("{ERROR_EXTEND_FILES}{e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            }
-            unique_segment_identifier = zffextender.unique_segment_identifier();
-        }
-    }
-
-    let args = Cli::parse();
-    let chunk_size: u64 = 2 << (args.chunk_size.get_size()-1);
-    output_information.chunk_size = format!("{} ({} {BYTES})", chunk_size.bytes_as_hrb(), chunk_size);
-    let segment_size = if segment_size == 0 {
-        u64::MAX
-    } else {
-        segment_size
-    };
-    output_information.segment_size = format!("{} ({} {BYTES})", segment_size.bytes_as_hrb(), segment_size);
-    output_information.unique_segment_identifier = unique_segment_identifier;
-    output_information.encryption_header = encryption_header;
-    output_information.compression_header = Some(compression_header);
-    output_information.signature_private_key = match signer(&args) {
-        None => None,
-        Some(keypair) => Some(base64::encode(keypair.secret.to_bytes())),
-    };
-    output_information.object_type = object_header.object_type();
-    output_information.extended = matches!(args.command, Commands::Extend { extend_command: _, append_files: _ });
-    output_information.description_header = Some(description_header);
-    if let SignatureFlagValues::NoSignatures = args.sign_data { } else {
-        match args.sign_keypair {
-            None => output_information.signature_private_key = Some(base64::encode(sign_secretkey_bytes.unwrap())),
-            Some(_) => ()
-        }
-        output_information.signature_public_key = Some(base64::encode(sign_publickey_bytes.unwrap()));
-    }
-
-    match toml::Value::try_from(&output_information) {
-        Ok(info) => {
-            println!("{info}");
-            exit(EXIT_STATUS_SUCCESS);
-        },
-        Err(_) => {
+            info!("Zff file(s) successfully created");
             exit(EXIT_STATUS_SUCCESS);
         }
+        Commands::Logical { .. } => todo!(),
+        Commands::Extend { .. } => todo!(),
+
     }
 }

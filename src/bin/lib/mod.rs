@@ -1,3 +1,7 @@
+//STD
+use std::process::exit;
+use std::error::Error;
+
 // - modules
 pub mod constants;
 pub mod traits;
@@ -8,6 +12,7 @@ use super::{EncryptionHeader, CompressionHeader, ObjectType, EncryptionAlgorithm
 
 // - external
 use serde::ser::{Serialize, Serializer, SerializeStruct};
+use log::{LevelFilter, error, debug, info};
 
 fn string_to_str(s: String) -> &'static str {
   Box::leak(s.into_boxed_str())
@@ -43,6 +48,7 @@ impl OutputInfo {
     }
 }
 
+/*
 impl Serialize for OutputInfo {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -158,7 +164,7 @@ impl Serialize for SerializeCompressionHeader {
     }
 }
 
-
+*/
 pub(crate) fn hrs_parser<V: Into<String>>(value: V) -> Option<u64> {
     let mut value = value.into();
     if let Ok(val) = value.parse() { return Some(val) };
@@ -197,4 +203,18 @@ pub(crate) fn hrs_parser<V: Into<String>>(value: V) -> Option<u64> {
         }
     }
     None
+}
+
+/// Parse a single key-value pair
+pub(crate) fn parse_key_val<T, U>(s: &str) -> Result<(T, U), Box<dyn Error + Send + Sync + 'static>>
+where
+    T: std::str::FromStr,
+    T::Err: Error + Send + Sync + 'static,
+    U: std::str::FromStr,
+    U::Err: Error + Send + Sync + 'static,
+{
+    let pos = s
+        .find(':')
+        .ok_or_else(|| format!("invalid KEY:value -> no `:` found in `{s}`"))?;
+    Ok((s[..pos].parse()?, s[pos + 1..].parse()?))
 }
