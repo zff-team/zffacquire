@@ -616,7 +616,49 @@ fn main() {
             info!("Zff file(s) successfully created");
             exit(EXIT_STATUS_SUCCESS);
         }
-        Commands::Logical { .. } => todo!(),
+        Commands::Logical { inputfiles, outputfile } => {
+            let chunk_size = match hrs_parser(&args.chunk_size) {
+                Some(val) => val,
+                None => {
+                    error!("Cannot parse {}, please enter a valid size (e.g. 32K, 40k, 10M, ...)", args.chunk_size);
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
+
+            let obj_header = ObjectHeader::new(
+                INITIAL_OBJECT_NUMBER,
+                encryption_header,
+                chunk_size,
+                compression_header(&args),
+                object_description_header(&args),
+                ObjectType::Logical,
+                flags,
+                );
+
+            let mut logical_objects = HashMap::new();
+            logical_objects.insert(obj_header, inputfiles.to_vec());
+            
+            let mut zw = match ZffWriter::new(
+                HashMap::<ObjectHeader, std::fs::File>::new(), //Placeholder for physical objects
+                logical_objects,
+                hash_types,
+                ZffWriterOutput::NewContainer(outputfile.into()),
+                setup_optional_parameter(&args),
+                ) {
+                Ok(zw) => zw,
+                Err(e) => {
+                    error!("An error occured while trying to create the ZffWriter object:\n{e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
+
+            if let Err(e) = zw.generate_files() {
+                error!("An error occured while filling the zff container:\n {e}");
+                exit(EXIT_STATUS_ERROR);
+            };
+            info!("Zff file(s) successfully created");
+            exit(EXIT_STATUS_SUCCESS);
+        },
         Commands::Extend { .. } => todo!(),
 
     }
