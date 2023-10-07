@@ -563,27 +563,30 @@ fn main() {
         passive_object: false, //currently map-objects are not supported by zffacquire, so every object is an active object.
     };
 
+    let chunk_size = match hrs_parser(&args.chunk_size) {
+        Some(val) => val,
+        None => {
+            error!("Cannot parse {}, please enter a valid size (e.g. 32K, 40k, 10M, ...)", args.chunk_size);
+            exit(EXIT_STATUS_ERROR);
+        }
+    };
+
+    let mut obj_header = ObjectHeader::new(
+        INITIAL_OBJECT_NUMBER,
+        encryption_header,
+        chunk_size,
+        compression_header(&args),
+        object_description_header(&args),
+        ObjectType::Physical,
+        flags,
+        );
+
+    let mut logical_objects = HashMap::new();
+    let mut physical_objects = HashMap::new();
+
     match &args.command {
         Commands::Physical { inputfile, outputfile } => {
-            let chunk_size = match hrs_parser(&args.chunk_size) {
-                Some(val) => val,
-                None => {
-                    error!("Cannot parse {}, please enter a valid size (e.g. 32K, 40k, 10M, ...)", args.chunk_size);
-                    exit(EXIT_STATUS_ERROR);
-                }
-            };
-
-            let obj_header = ObjectHeader::new(
-                INITIAL_OBJECT_NUMBER,
-                encryption_header,
-                chunk_size,
-                compression_header(&args),
-                object_description_header(&args),
-                ObjectType::Physical,
-                flags,
-                );
-
-            let file = match File::open(inputfile) {
+             let file = match File::open(inputfile) {
                 Ok(file) => file,
                 Err(e) => {
                     let inputfile = inputfile.to_string_lossy();
@@ -592,12 +595,11 @@ fn main() {
                 }
             };
 
-            let mut physical_objects = HashMap::new();
             physical_objects.insert(obj_header, file);
             
             let mut zw = match ZffWriter::new(
                 physical_objects,
-                HashMap::new(),
+                logical_objects,
                 hash_types,
                 ZffWriterOutput::NewContainer(outputfile.into()),
                 setup_optional_parameter(&args),
@@ -617,29 +619,12 @@ fn main() {
             exit(EXIT_STATUS_SUCCESS);
         }
         Commands::Logical { inputfiles, outputfile } => {
-            let chunk_size = match hrs_parser(&args.chunk_size) {
-                Some(val) => val,
-                None => {
-                    error!("Cannot parse {}, please enter a valid size (e.g. 32K, 40k, 10M, ...)", args.chunk_size);
-                    exit(EXIT_STATUS_ERROR);
-                }
-            };
+            obj_header.object_type = ObjectType::Logical;
 
-            let obj_header = ObjectHeader::new(
-                INITIAL_OBJECT_NUMBER,
-                encryption_header,
-                chunk_size,
-                compression_header(&args),
-                object_description_header(&args),
-                ObjectType::Logical,
-                flags,
-                );
-
-            let mut logical_objects = HashMap::new();
             logical_objects.insert(obj_header, inputfiles.to_vec());
             
             let mut zw = match ZffWriter::new(
-                HashMap::<ObjectHeader, std::fs::File>::new(), //Placeholder for physical objects
+                physical_objects, //Placeholder for physical objects
                 logical_objects,
                 hash_types,
                 ZffWriterOutput::NewContainer(outputfile.into()),
@@ -659,7 +644,49 @@ fn main() {
             info!("Zff file(s) successfully created");
             exit(EXIT_STATUS_SUCCESS);
         },
-        Commands::Extend { .. } => todo!(),
+        Commands::Extend { extend_command, append_files } => {
+            match extend_command {
+                //setup logical objects.
+                ExtendSubcommands::Logical { inputfiles } => {
+                    obj_header.object_type = ObjectType::Logical;
+                    logical_objects.insert(obj_header, inputfiles.to_vec());
+                },
+                //setup physical objects.
+                ExtendSubcommands::Physical { inputfile } => {
+                    let file = match File::open(inputfile) {
+                        Ok(file) => file,
+                        Err(e) => {
+                            let inputfile = inputfile.to_string_lossy();
+                            error!("Following error occurred while trying to open {inputfile}:\n{e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    };
+                    physical_objects.insert(obj_header, file);
+                },
+            };
+
+            let mut zw = match ZffWriter::new(
+                physical_objects,
+                logical_objects,
+                hash_types,
+                ZffWriterOutput::ExtendContainer(append_files.to_vec()),
+                setup_optional_parameter(&args),
+                ) {
+                Ok(zw) => zw,
+                Err(e) => {
+                    error!("An error occured while trying to create the ZffWriter object:\n{e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
+
+            if let Err(e) = zw.generate_files() {
+                error!("An error occured while filling the zff container:\n {e}");
+                exit(EXIT_STATUS_ERROR);
+            };
+            info!("Zff file(s) successfully created");
+            exit(EXIT_STATUS_SUCCESS);
+
+        },
 
     }
 }
