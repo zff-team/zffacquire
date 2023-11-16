@@ -53,6 +53,7 @@ use clap::{
 use rand::{Rng};
 use ed25519_dalek::SigningKey;
 use log::{LevelFilter, error, debug, info};
+use base64::{Engine, engine::general_purpose::STANDARD as base64engine};
 
 #[derive(Parser)]
 #[clap(about, version, author, override_usage="zffacquire <SUBCOMMAND> [OPTIONS]")]
@@ -137,11 +138,11 @@ struct Cli {
     notes: Option<String>,
 
     /// Custom description values
-    #[arg(short = 'O', long="custom-description", value_parser = parse_key_val::<String, String>)]
+    #[arg(short = 'O', long="custom-description", value_parser = parse_key_val::<String, String>, global=true, required=false)]
     custom_descriptions: Vec<(String, String)>,
 
     /// The Loglevel
-    #[clap(short='L', long="log-level", value_enum, default_value="info")]
+    #[clap(short='L', long="log-level", value_enum, default_value="info", global=true, required=false)]
     log_level: LogLevel,
 
     #[clap(subcommand)]
@@ -203,11 +204,12 @@ enum ExtendSubcommands {
     },
 }
 
-#[derive(ValueEnum, Clone)]
+#[derive(ValueEnum, Clone, PartialEq)]
 enum LogLevel {
     Error,
     Warn,
     Info,
+    FullInfo,
     Debug,
     Trace
 }
@@ -265,11 +267,11 @@ fn signer(args: &Cli) -> Option<SigningKey> {
         }
     };
     if args.sign_key.is_some() {
-        debug!("Using private sign key {}", base64::encode(sign_key.to_bytes()));
+        debug!("Using private sign key {}", base64engine.encode(sign_key.to_bytes()));
     } else {
-        info!("Private signature key is {}", base64::encode(sign_key.to_bytes()));
+        info!("Private signature key is {}", base64engine.encode(sign_key.to_bytes()));
     }
-    info!("Public signature key is {}", base64::encode(sign_key.verifying_key()));
+    info!("Public signature key is {}", base64engine.encode(sign_key.verifying_key()));
     Some(sign_key)
 }
 
@@ -310,6 +312,18 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
             exit(EXIT_STATUS_ERROR);
         }
     };
+    let verify_pw = match rpassword::prompt_password("Re-enter the encryption password (verify): ") {
+        Ok(pw) => pw,
+        Err(e) => {
+            error!("An error occured while trying to read your password...please use only UTF8 valid characters:\n{e}");
+            exit(EXIT_STATUS_ERROR);
+        }
+    };
+
+    if password != verify_pw {
+        error!("Passwords didn't match.");
+        exit(EXIT_STATUS_ERROR);
+    }
 
     let (kdf, pbes) = match args.password_kdf {
         PasswordKdfValues::Pbkdf2Sha256Aes128 => (KDFScheme::PBKDF2SHA256, PBEScheme::AES128CBC),
@@ -331,18 +345,19 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
     let encryption_key = match encryption_algorithm {
         EncryptionAlgorithm::AES128GCM => Encryption::gen_random_key(128),
         EncryptionAlgorithm::AES256GCM => Encryption::gen_random_key(256),
+        EncryptionAlgorithm::CHACHA20POLY1305 => Encryption::gen_random_key(256),
         _ => {
             error!("{}", ERROR_UNKNOWN_ENCRYPTION_ALGORITHM);
             exit(EXIT_STATUS_ERROR)
         },
     };
-    debug!("Using encryption key {}", base64::encode(encryption_key.clone()));
+    debug!("Using encryption key {}", base64engine.encode(encryption_key.clone()));
 
     let pbe_nonce = Encryption::gen_random_iv();
-    debug!("Used pbe: nonce {}", base64::encode(pbe_nonce));
+    debug!("Used pbe: nonce {}", base64engine.encode(pbe_nonce));
 
     let salt = Encryption::gen_random_salt();
-    debug!("Used salt: {}", base64::encode(salt));
+    debug!("Used salt: {}", base64engine.encode(salt));
     
     let (pbe_header, encrypted_encryption_key) = match kdf {
         KDFScheme::PBKDF2SHA256 => {
@@ -536,13 +551,22 @@ fn main() {
         LogLevel::Error => LevelFilter::Error,
         LogLevel::Warn => LevelFilter::Warn,
         LogLevel::Info => LevelFilter::Info,
+        LogLevel::FullInfo => LevelFilter::Info,
         LogLevel::Debug => LevelFilter::Debug,
         LogLevel::Trace => LevelFilter::Trace,
     };
-    env_logger::builder()
+    if args.log_level == LogLevel::FullInfo {
+        env_logger::builder()
         .format_timestamp_nanos()
         .filter_level(log_level)
         .init();
+    } else {
+        env_logger::builder()
+        .format_timestamp_nanos()
+        .filter_module(env!("CARGO_PKG_NAME"), log_level)
+        .init();
+    };
+        
 
     let mut hash_types = Vec::new();
     for htype in &args.hash_algorithm {
@@ -556,11 +580,11 @@ fn main() {
     }
 
     let encryption_header = encryption_header(&args);
-    let sign_keypair = signer(&args);
+    let optional_parameter = setup_optional_parameter(&args);
+
     let flags = ObjectFlags {
         encryption: encryption_header.is_some(),
-        sign_hash: sign_keypair.is_some(),
-        passive_object: false, //currently map-objects are not supported by zffacquire, so every object is an active object.
+        sign_hash: optional_parameter.signature_key.is_some(),
     };
 
     let chunk_size = match hrs_parser(&args.chunk_size) {
@@ -584,7 +608,7 @@ fn main() {
     let mut logical_objects = HashMap::new();
     let mut physical_objects = HashMap::new();
 
-    match &args.command {
+    let zffwriter_output = match &args.command {
         Commands::Physical { inputfile, outputfile } => {
              let file = match File::open(inputfile) {
                 Ok(file) => file,
@@ -596,53 +620,15 @@ fn main() {
             };
 
             physical_objects.insert(obj_header, file);
-            
-            let mut zw = match ZffWriter::new(
-                physical_objects,
-                logical_objects,
-                hash_types,
-                ZffWriterOutput::NewContainer(outputfile.into()),
-                setup_optional_parameter(&args),
-                ) {
-                Ok(zw) => zw,
-                Err(e) => {
-                    error!("An error occured while trying to create the ZffWriter object:\n{e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            };
 
-            if let Err(e) = zw.generate_files() {
-                error!("An error occured while filling the zff container:\n {e}");
-                exit(EXIT_STATUS_ERROR);
-            };
-            info!("Zff file(s) successfully created");
-            exit(EXIT_STATUS_SUCCESS);
-        }
+            ZffWriterOutput::NewContainer(outputfile.into())
+        },
         Commands::Logical { inputfiles, outputfile } => {
             obj_header.object_type = ObjectType::Logical;
 
             logical_objects.insert(obj_header, inputfiles.to_vec());
             
-            let mut zw = match ZffWriter::new(
-                physical_objects, //Placeholder for physical objects
-                logical_objects,
-                hash_types,
-                ZffWriterOutput::NewContainer(outputfile.into()),
-                setup_optional_parameter(&args),
-                ) {
-                Ok(zw) => zw,
-                Err(e) => {
-                    error!("An error occured while trying to create the ZffWriter object:\n{e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            };
-
-            if let Err(e) = zw.generate_files() {
-                error!("An error occured while filling the zff container:\n {e}");
-                exit(EXIT_STATUS_ERROR);
-            };
-            info!("Zff file(s) successfully created");
-            exit(EXIT_STATUS_SUCCESS);
+            ZffWriterOutput::NewContainer(outputfile.into())
         },
         Commands::Extend { extend_command, append_files } => {
             match extend_command {
@@ -665,28 +651,28 @@ fn main() {
                 },
             };
 
-            let mut zw = match ZffWriter::new(
-                physical_objects,
-                logical_objects,
-                hash_types,
-                ZffWriterOutput::ExtendContainer(append_files.to_vec()),
-                setup_optional_parameter(&args),
-                ) {
-                Ok(zw) => zw,
-                Err(e) => {
-                    error!("An error occured while trying to create the ZffWriter object:\n{e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            };
-
-            if let Err(e) = zw.generate_files() {
-                error!("An error occured while filling the zff container:\n {e}");
-                exit(EXIT_STATUS_ERROR);
-            };
-            info!("Zff file(s) successfully created");
-            exit(EXIT_STATUS_SUCCESS);
-
+            ZffWriterOutput::ExtendContainer(append_files.to_vec())
         },
+    };
 
-    }
+    let mut zw = match ZffWriter::new(
+        physical_objects,
+        logical_objects,
+        hash_types,
+        zffwriter_output,
+        optional_parameter,
+        ) {
+        Ok(zw) => zw,
+        Err(e) => {
+            error!("An error occured while trying to create the ZffWriter object:\n{e}");
+            exit(EXIT_STATUS_ERROR);
+        }
+    };
+
+    if let Err(e) = zw.generate_files() {
+        error!("An error occured while filling the zff container:\n {e}");
+        exit(EXIT_STATUS_ERROR);
+    };
+    info!("Zff file(s) successfully created");
+    exit(EXIT_STATUS_SUCCESS);
 }

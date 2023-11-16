@@ -22,7 +22,7 @@ bench = true
 [dependencies]
 clap = { version = "4.2.7", features = [ "derive" ] }
 rand = "0.7.3"
-zff = { path="../zff" }
+zff = { path="../zff", features = [ "log" ] }
 base64 = "0.21.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.5.8"
