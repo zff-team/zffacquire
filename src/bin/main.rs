@@ -12,15 +12,13 @@ extern crate rand;
 extern crate zff;
 
 // - modules
-mod lib;
+mod res;
 
 // - internal
-use crate::lib::{
+use crate::res::{
     hrs_parser,
     parse_key_val,
     constants::*,
-    traits::*,
-    OutputInfo,
 };
 use zff::{
     header::{CompressionHeader, EncryptionHeader, DescriptionHeader, ObjectType},
@@ -473,6 +471,7 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
 }
 
 fn object_description_header(args: &Cli) -> DescriptionHeader {
+
     let mut description_header = DescriptionHeader::new_empty(DEFAULT_HEADER_VERSION_DESCRIPTION_HEADER);
     if let Some(value) = &args.case_number {
         description_header.set_case_number(value);
@@ -489,6 +488,11 @@ fn object_description_header(args: &Cli) -> DescriptionHeader {
     for (key, value) in &args.custom_descriptions {
         description_header.custom_identifier_value(key, value);
     }
+
+    // add tool-specific stuff
+    description_header.custom_identifier_value(TOOLNAME_KEY, TOOLNAME_VALUE);
+    description_header.custom_identifier_value(TOOLVERSION_KEY, TOOLVERSION_VALUE);
+
     description_header
 }
 
