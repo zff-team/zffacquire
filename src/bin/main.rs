@@ -140,7 +140,7 @@ struct Cli {
     custom_descriptions: Vec<(String, String)>,
 
     /// The Loglevel
-    #[clap(short='L', long="log-level", value_enum, default_value="info", global=true, required=false)]
+    #[clap(short='L', long="log-level", value_enum, default_value="full-info", global=true, required=false)]
     log_level: LogLevel,
 
     #[clap(subcommand)]
@@ -209,6 +209,7 @@ enum LogLevel {
     Info,
     FullInfo,
     Debug,
+    FullDebug,
     Trace
 }
 
@@ -557,9 +558,10 @@ fn main() {
         LogLevel::Info => LevelFilter::Info,
         LogLevel::FullInfo => LevelFilter::Info,
         LogLevel::Debug => LevelFilter::Debug,
+        LogLevel::FullDebug => LevelFilter::Debug,
         LogLevel::Trace => LevelFilter::Trace,
     };
-    if args.log_level == LogLevel::FullInfo {
+    if args.log_level == LogLevel::FullInfo || args.log_level == LogLevel::FullDebug {
         env_logger::builder()
         .format_timestamp_nanos()
         .filter_level(log_level)
