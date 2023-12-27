@@ -1,9 +1,9 @@
 // - STD
 use std::{
-    fs::{File},
+    fs::File,
     process::exit,
     path::PathBuf,
-    collections::{HashMap},
+    collections::HashMap,
 };
 
 // - extern crates
@@ -34,9 +34,6 @@ use zff::{
     
     constants::{
         DEFAULT_COMPRESSION_RATIO_THRESHOLD,
-        DEFAULT_HEADER_VERSION_COMPRESSION_HEADER,
-        DEFAULT_HEADER_VERSION_DESCRIPTION_HEADER,
-        DEFAULT_HEADER_VERSION_PBE_HEADER,
         INITIAL_OBJECT_NUMBER,
     },
 };
@@ -295,7 +292,7 @@ fn compression_header(args: &Cli) -> CompressionHeader {
         info!("Data will be compressed with {} and level {}", compression_algorithm.to_string(), args.compression_level);
     }
 
-    CompressionHeader::new(DEFAULT_HEADER_VERSION_COMPRESSION_HEADER, compression_algorithm, args.compression_level, args.compression_threshold)
+    CompressionHeader::new(compression_algorithm, args.compression_level, args.compression_threshold)
 }
 
 /// returns the encryption header and the encryption key.
@@ -362,7 +359,7 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
         KDFScheme::PBKDF2SHA256 => {
             let iterations = 310000;
             let kdf_parameters = KDFParameters::PBKDF2SHA256Parameters(PBKDF2SHA256Parameters::new(iterations, salt));
-            let pbe_header = PBEHeader::new(DEFAULT_HEADER_VERSION_PBE_HEADER, kdf, pbes.clone(), kdf_parameters, pbe_nonce);
+            let pbe_header = PBEHeader::new(kdf, pbes.clone(), kdf_parameters, pbe_nonce);
             let encrypted_encryption_key = match pbes {
                 PBEScheme::AES128CBC => match Encryption::encrypt_pbkdf2sha256_aes128cbc(
                     iterations,
@@ -402,7 +399,7 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
             let r = SCRYPT_R_RECOMMENDED;
             let p = SCRYPT_P_RECOMMENDED;
             let kdf_parameters = KDFParameters::ScryptParameters(ScryptParameters::new(logn, r, p, salt));
-            let pbe_header = PBEHeader::new(DEFAULT_HEADER_VERSION_PBE_HEADER, kdf, pbes.clone(), kdf_parameters, pbe_nonce);
+            let pbe_header = PBEHeader::new(kdf, pbes.clone(), kdf_parameters, pbe_nonce);
             let encrypted_encryption_key = match pbes {
                 PBEScheme::AES128CBC => match Encryption::encrypt_scrypt_aes128cbc(logn, r, p, &salt, &pbe_nonce, password.trim(), &encryption_key) {
                     Ok(val) => val,
@@ -430,7 +427,7 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
             let lanes = ARGON_LANES_RECOMMENDED;
             let iterations = ARGON_ITERATIONS_RECOMMENDED;
             let kdf_parameters = KDFParameters::Argon2idParameters(Argon2idParameters::new(mem_cost, lanes, iterations, salt));
-            let pbe_header = PBEHeader::new(DEFAULT_HEADER_VERSION_PBE_HEADER, kdf, pbes.clone(), kdf_parameters, pbe_nonce);
+            let pbe_header = PBEHeader::new(kdf, pbes.clone(), kdf_parameters, pbe_nonce);
             let encrypted_encryption_key = match pbes {
                 PBEScheme::AES128CBC => match Encryption::encrypt_argon2_aes128cbc(
                     mem_cost, lanes, iterations, &salt, &pbe_nonce, password.trim(), &encryption_key) {
@@ -473,7 +470,7 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
 
 fn object_description_header(args: &Cli) -> DescriptionHeader {
 
-    let mut description_header = DescriptionHeader::new_empty(DEFAULT_HEADER_VERSION_DESCRIPTION_HEADER);
+    let mut description_header = DescriptionHeader::new_empty();
     if let Some(value) = &args.case_number {
         description_header.set_case_number(value);
     };
@@ -572,6 +569,8 @@ fn main() {
         .filter_module(env!("CARGO_PKG_NAME"), log_level)
         .init();
     };
+
+    debug!("Started zffacquire");
         
 
     let mut hash_types = Vec::new();
