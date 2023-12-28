@@ -45,7 +45,7 @@ use clap::{
     ValueEnum,
     //builder::TypedValueParser as _,
 };
-use rand::{Rng};
+use rand::Rng;
 use ed25519_dalek::SigningKey;
 use log::{LevelFilter, error, debug, info};
 use base64::{Engine, engine::general_purpose::STANDARD as base64engine};
