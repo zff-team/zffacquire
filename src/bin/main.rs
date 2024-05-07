@@ -16,8 +16,10 @@ mod res;
 
 // - internal
 use crate::res::{
+    get_physical_input_file,
     hrs_parser,
     parse_key_val,
+    concat_prefix_path,
     constants::*,
 };
 use zff::{
@@ -150,6 +152,7 @@ enum Commands {
     #[clap(arg_required_else_help=true)]
     Physical {
         /// The input file. This should be your device to dump. This field is REQUIRED.
+        /// E.g. "/dev/sda" or "/dev/nvme0n1" on Linux systems or \\\.\PhysicalDrive0 on Windows systems.
         #[clap(short='i', long="inputfile", required=true)]
         inputfile: PathBuf,
 
@@ -615,7 +618,7 @@ fn main() {
 
     let zffwriter_output = match &args.command {
         Commands::Physical { inputfile, outputfile } => {
-             let file = match File::open(inputfile) {
+             let file = match get_physical_input_file(inputfile.clone()) {
                 Ok(file) => file,
                 Err(e) => {
                     let inputfile = inputfile.to_string_lossy();
@@ -629,9 +632,11 @@ fn main() {
             ZffWriterOutput::NewContainer(outputfile.into())
         },
         Commands::Logical { inputfiles, outputfile } => {
+            let inputfiles: Vec<PathBuf> = inputfiles.iter().map(|x| concat_prefix_path(INPUTFILES_PATH_PREFIX ,x)).collect();
             obj_header.object_type = ObjectType::Logical;
+        
 
-            logical_objects.insert(obj_header, inputfiles.to_vec());
+            logical_objects.insert(obj_header, inputfiles);
             
             ZffWriterOutput::NewContainer(outputfile.into())
         },
@@ -639,12 +644,13 @@ fn main() {
             match extend_command {
                 //setup logical objects.
                 ExtendSubcommands::Logical { inputfiles } => {
+                    let inputfiles: Vec<PathBuf> = inputfiles.iter().map(|x| concat_prefix_path(INPUTFILES_PATH_PREFIX ,x)).collect();
                     obj_header.object_type = ObjectType::Logical;
-                    logical_objects.insert(obj_header, inputfiles.to_vec());
+                    logical_objects.insert(obj_header, inputfiles);
                 },
                 //setup physical objects.
                 ExtendSubcommands::Physical { inputfile } => {
-                    let file = match File::open(inputfile) {
+                    let file = match get_physical_input_file(inputfile.clone()) {
                         Ok(file) => file,
                         Err(e) => {
                             let inputfile = inputfile.to_string_lossy();

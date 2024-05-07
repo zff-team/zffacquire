@@ -22,7 +22,7 @@ bench = true
 [dependencies]
 clap = { version = "4.2.7", features = [ "derive" ] }
 rand = "0.8.5"
-zff = { version="3.0.0-beta.0", features = [ "log" ] }
+zff = { version = "3.0.0-beta.4", features = [ "log" ] }
 base64 = "0.21.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8.8"
@@ -31,6 +31,10 @@ env_logger = "0.10.1"
 #signing
 ed25519-dalek = { version = "2.0.0", features = [ "rand_core", "digest" ] }
 rpassword = "7.2.0"
+
+# platform specific dependencies
+[target.'cfg(target_family = "windows")'.dependencies]
+winapi = { version = "0.3.9", features = [ "winbase", "winnt", "winerror", "handleapi" ] }
 
 [profile.release]
 lto = true              # enables link time optimization
