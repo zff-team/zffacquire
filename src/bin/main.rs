@@ -1,6 +1,5 @@
 // - STD
 use std::{
-    fs::File,
     process::exit,
     path::PathBuf,
     collections::HashMap,
@@ -22,6 +21,8 @@ use crate::res::{
     concat_prefix_path,
     constants::*,
 };
+use crate::res::list_devices::print_devices_table;
+
 use zff::{
     header::{CompressionHeader, EncryptionHeader, DescriptionHeader, ObjectType},
     header::{KDFParameters, PBKDF2SHA256Parameters, ScryptParameters, Argon2idParameters, PBEHeader, DeduplicationChunkMap, ObjectHeader, ObjectFlags},
@@ -152,7 +153,10 @@ enum Commands {
     #[clap(arg_required_else_help=true)]
     Physical {
         /// The input file. This should be your device to dump. This field is REQUIRED.
-        /// E.g. "/dev/sda" or "/dev/nvme0n1" on Linux systems or \\\.\PhysicalDrive0 on Windows systems.
+        /// You can use all devices which are available by using the "zffacquire list-devices" command.
+        /// E.g. "/dev/sda" or "/dev/nvme0n1" in Linux systems.
+        /// On windows systems, you have to use the device names which are listed by the "zffacquire list-devices" command,
+        /// e.g. "disk0" for "\\.\PhysicalDrive0" or "volume1" for "\\.\HarddiskVolume1".
         #[clap(short='i', long="inputfile", required=true)]
         inputfile: PathBuf,
 
@@ -182,6 +186,11 @@ enum Commands {
         #[clap(subcommand)]
         extend_command: ExtendSubcommands,
     },
+
+    /// List all available physical devices,
+    /// which can be used as input for the physical subcommand.
+    #[clap()]
+    ListDevices { },
 }
 
 #[derive(Subcommand)]
@@ -574,6 +583,14 @@ fn main() {
     };
 
     debug!("Started zffacquire");
+
+    match args.command {
+        Commands::ListDevices {  } => {
+            print_devices_table();
+            exit(EXIT_STATUS_SUCCESS);
+        },
+        _ => (),
+    }
         
 
     let mut hash_types = Vec::new();
@@ -617,6 +634,9 @@ fn main() {
     let mut physical_objects = HashMap::new();
 
     let zffwriter_output = match &args.command {
+        Commands::ListDevices {  } => {
+            unreachable!()
+        },
         Commands::Physical { inputfile, outputfile } => {
              let file = match get_physical_input_file(inputfile.clone()) {
                 Ok(file) => file,
