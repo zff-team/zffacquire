@@ -5,8 +5,11 @@ pub(crate) const ERROR_UNKNOWN_PASSWORD_KDF: &str = "The given password key deri
 pub(crate) const ERROR_PARSE_KEY: &str = "Could not parse your given base64 formatted secret key / keypair.";
 pub(crate) const ERROR_UNPARSABLE_SEGMENT_SIZE_VALUE: &str = "Error: can not parse the given segment size value: ";
 pub(crate) const ERROR_UNPARSABLE_CHUNKMAP_SIZE_VALUE: &str = "Error: can not parse the given chunkmap size value: ";
+#[cfg(target_family = "unix")]
 pub(crate) const ERROR_CANONICALIZE_INPUT_FILE_: &str = "An error occurred while trying to canonicalize following inputfile: ";
+#[cfg(target_family = "unix")]
 pub(crate) const ERROR_STRIPPING_PREFIX_INPUT_FILE_: &str = "An error occurred while trying to stripping the path-prefix of following inputfile: ";
+#[cfg(target_family = "windows")]
 pub(crate) const ERROR_GETTING_WINDOWS_VOLUME_LIST_: &str = "An error occurred while trying to get the list of Windows volumes.";
 
 pub(crate) const EXIT_STATUS_ERROR: i32 = 1;
@@ -17,8 +20,8 @@ pub(crate) const HRS_PARSER_BASE: u64 = 1024;
 #[cfg(target_family = "unix")]
 pub(crate) const UNIX_BASE: &str = "/";
 #[cfg(target_family = "windows")]
-pub(crate) const HARDDISKVOLUME_PREFIX: &str = "\\\\?\\HarddiskVolume";
 pub (crate) const HARDDISKVOLUME_LOWERCASE_PREFIX: &str = "harddiskvolume";
+#[cfg(target_family = "windows")]
 pub (crate) const PHYSICALDISK_LOWERCASE_PREFIX: &str = "physicaldrive";
 
 // scrypt parameters

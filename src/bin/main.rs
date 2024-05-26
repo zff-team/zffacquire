@@ -21,6 +21,8 @@ use crate::res::{
     concat_prefix_path,
     constants::*,
 };
+
+#[cfg(target_family = "windows")]
 use crate::res::list_devices::print_devices_table;
 
 use zff::{
@@ -187,6 +189,7 @@ enum Commands {
         extend_command: ExtendSubcommands,
     },
 
+    #[cfg(target_family = "windows")]
     /// List all available physical devices,
     /// which can be used as input for the physical subcommand.
     #[clap()]
@@ -584,6 +587,7 @@ fn main() {
 
     debug!("Started zffacquire");
 
+    #[cfg(target_family = "windows")]
     match args.command {
         Commands::ListDevices {  } => {
             print_devices_table();
@@ -634,6 +638,7 @@ fn main() {
     let mut physical_objects = HashMap::new();
 
     let zffwriter_output = match &args.command {
+        #[cfg(target_family = "windows")]
         Commands::ListDevices {  } => {
             unreachable!()
         },

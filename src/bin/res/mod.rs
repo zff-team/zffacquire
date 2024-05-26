@@ -13,15 +13,19 @@ pub mod list_devices;
 
 // - internal
 use constants::*;
+#[cfg(target_family = "windows")]
 use traits::HumanReadable;
 
 // - types
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 // - external
-use comfy_table::{Table, Attribute, Cell, ContentArrangement};
-use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-use comfy_table::presets::UTF8_FULL;
+#[cfg(target_family = "windows")]
+use comfy_table::{
+    Table, Attribute, Cell, ContentArrangement,
+    modifiers::UTF8_ROUND_CORNERS,
+    presets::UTF8_FULL,
+};
 
 #[cfg(target_family = "windows")]
 use windows_drives::drive::{BufferedPhysicalDrive, BufferedHarddiskVolume};
