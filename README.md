@@ -73,7 +73,7 @@ zffacquire list-devices
 
 If you want to dump a full physical device, you can choose the appropriate device from the printed table (by using the command above).  
 ```bash
-zffacquire physical -i "\\?\PhysicalDrive2 -o my_physical_drive
+zffacquire physical -i "\\?\PhysicalDrive2" -o my_physical_drive
 ```
 
 You can also dump just a single volume (e.g. the volume which is mounted at drive D:\\):
