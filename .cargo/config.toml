@@ -1,2 +1,5 @@
 [build]
-rustflags = [ "-Ctarget-feature=+aes,+sse2,+sse4.1,+ssse3" ]
+rustflags = ["-Ctarget-feature=+aes,+sse2,+sse4.1,+ssse3"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+aes"]

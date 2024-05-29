@@ -26,8 +26,6 @@ use crate::res::{
 use crate::res::list_devices::print_devices_table;
 
 use zff::{
-    header::{CompressionHeader, EncryptionHeader, DescriptionHeader, ObjectType},
-    header::{KDFParameters, PBKDF2SHA256Parameters, ScryptParameters, Argon2idParameters, PBEHeader, DeduplicationChunkMap, ObjectHeader, ObjectFlags},
     EncryptionAlgorithm,
     CompressionAlgorithm,
     KDFScheme,
@@ -35,8 +33,25 @@ use zff::{
     Encryption,
     Signature,
     HashType,
-    io::zffwriter::{ZffWriterOptionalParameter, ZffWriter, ZffWriterOutput},
-    
+    header::{
+        CompressionHeader, 
+        EncryptionHeader, 
+        DescriptionHeader, 
+        ObjectType,
+        KDFParameters, 
+        PBKDF2SHA256Parameters, 
+        ScryptParameters, 
+        Argon2idParameters, 
+        PBEHeader, 
+        DeduplicationChunkMap, 
+        ObjectHeader, 
+        ObjectFlags
+    },
+    io::{ZffCreationParameters, 
+        zffwriter::{
+            ZffWriter, ZffWriterOutput
+        }
+    },
     constants::{
         DEFAULT_COMPRESSION_RATIO_THRESHOLD,
         INITIAL_OBJECT_NUMBER,
@@ -509,7 +524,7 @@ fn object_description_header(args: &Cli) -> DescriptionHeader {
     description_header
 }
 
-fn setup_optional_parameter(args: &Cli) -> ZffWriterOptionalParameter {
+fn setup_optional_parameter(args: &Cli) -> ZffCreationParameters {
     let mut rng = rand::thread_rng();
 
     let description_notes = &args.description_notes;
@@ -551,7 +566,7 @@ fn setup_optional_parameter(args: &Cli) -> ZffWriterOptionalParameter {
 
     let unique_identifier = rng.gen();
 
-    ZffWriterOptionalParameter {
+    ZffCreationParameters {
         signature_key: sign_keypair,
         target_segment_size,
         chunkmap_size,
