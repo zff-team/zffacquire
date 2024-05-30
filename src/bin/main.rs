@@ -25,6 +25,7 @@ use crate::res::{
 #[cfg(target_family = "windows")]
 use crate::res::list_devices::print_devices_table;
 
+use res::traits::HumanReadable;
 use zff::{
     EncryptionAlgorithm,
     CompressionAlgorithm,
@@ -622,6 +623,7 @@ fn main() {
             HashAlgorithmValues::Blake3 => hash_types.push(HashType::Blake3),
         }
     }
+    debug!("Following hash algorithms will be used: {:?}", hash_types);
 
     let encryption_header = encryption_header(&args);
     let optional_parameter = setup_optional_parameter(&args);
@@ -638,6 +640,7 @@ fn main() {
             exit(EXIT_STATUS_ERROR);
         }
     };
+    debug!("Set chunk_size zu {}", chunk_size.bytes_as_hrb());
 
     let mut obj_header = ObjectHeader::new(
         INITIAL_OBJECT_NUMBER,
