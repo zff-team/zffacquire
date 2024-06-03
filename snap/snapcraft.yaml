@@ -1,0 +1,43 @@
+name: zffacquire
+adopt-info: zffacquire
+summary: Tool to acquire entire disks or files in Zff format.
+description: |
+  zffacquire is used to dump physical memory (or RAM) or files in zff format.
+# snapcraft information
+base: core22
+grade: stable
+confinement: strict
+compression: lzo
+
+architectures:
+  - build-on: amd64
+  - build-on: arm64
+
+# snapcraft
+# install rust manually
+parts:
+  rust-deps:
+    plugin: nil
+    build-packages:
+      - curl
+    override-pull: |
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      source $HOME/.cargo/env
+  zffacquire:
+    after: [ rust-deps ]
+    build-packages: [ gcc, libacl1-dev ]
+    plugin: rust
+    source: https://github.com/zff-team/zffacquire.git
+    override-pull: |
+      snapcraftctl pull
+      VERSION="$(git describe --tags --abbrev=0)"
+      [ -n "$(echo $VERSION)" ] && GRADE=stable
+      snapcraftctl set-version "$VERSION"
+      snapcraftctl set-grade "$GRADE"
+      patch -d $SNAPCRAFT_PART_SRC/src/bin/res < $SNAPCRAFT_PROJECT_DIR/snap/local/constants_snap_hostfs_prefix.patch
+apps:
+  zffacquire:
+    command: bin/zffacquire
+    plugs:
+      - home
+      - system-backup

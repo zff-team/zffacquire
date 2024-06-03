@@ -1,0 +1,10 @@
+--- constants.rs	2023-12-30 14:50:39.201976779 +0100
++++ patched.constants.rs	2023-12-30 14:51:04.561878800 +0100
+@@ -35,4 +35,4 @@
+ 
+ // External
+ // workaround for snap package
+-pub(crate) const INPUTFILES_PATH_PREFIX: &str = "/";
+\ No newline at end of file
++pub(crate) const INPUTFILES_PATH_PREFIX: &str = "/var/lib/snapd/hostfs";
+\ No newline at end of file
