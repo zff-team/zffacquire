@@ -53,6 +53,23 @@ jobs:
       if: matrix.os == 'macos-latest'
       run: mv target/release/zffacquire release/zffacquire-x86_64-macos
 
+    - name: Build AppImage (Linux only)
+      if: matrix.os == 'ubuntu-20.04'
+      run: |
+        curl -Lo appimagetool.AppImage https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+        curl -Lo utilities-terminal.png https://github.com/ph0llux/zffacquire/blob/master/.github/terminal.png
+        chmod +x appimagetool.AppImage
+        mkdir -p AppDir/usr/bin
+        cp release/zffacquire-x86_64-linux AppDir/usr/bin/zffacquire
+        cp utilities-terminal.png AppDir/
+        echo "[Desktop Entry]
+        Name=Secret Project Name
+        Exec=zffacquire
+        Icon=utilities-terminal
+        Type=Application
+        Categories=Utility;" > AppDir/zffacquire.desktop
+        ./appimagetool.AppImage AppDir release/zffacquire-x86_64.AppImage
+
     - name: Upload Release Asset
       uses: actions/upload-artifact@v2
       with:
@@ -86,5 +103,6 @@ jobs:
           release/zffacquire-x86_64-linux
           release/zffacquire-x86_64.exe
           release/zffacquire-x86_64-macos
+          release/zffacquire-x86_64.AppImage
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
