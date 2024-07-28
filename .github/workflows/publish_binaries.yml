@@ -63,7 +63,7 @@ jobs:
         cp release/zffacquire-x86_64-linux AppDir/usr/bin/zffacquire
         cp utilities-terminal.png AppDir/
         echo "[Desktop Entry]
-        Name=Secret Project Name
+        Name=zffacquire
         Exec=zffacquire
         Icon=utilities-terminal
         Type=Application
