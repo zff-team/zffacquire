@@ -29,7 +29,6 @@ use zff::{
     CompressionAlgorithm,
     KDFScheme,
     PBEScheme,
-    Encryption,
     Signature,
     HashType,
     header::{
@@ -46,15 +45,14 @@ use zff::{
         ObjectHeader, 
         ObjectFlags
     },
-    io::{ZffCreationParameters, 
-        zffwriter::ZffWriter,
-        zffstreamer::{ZffStreamer, ZffFilesOutput},
+    io::{ZffCreationParameters,zffstreamer::{ZffStreamer, ZffFilesOutput},
     },
     constants::{
         DEFAULT_COMPRESSION_RATIO_THRESHOLD,
         INITIAL_OBJECT_NUMBER,
         FIRST_FILE_EXTENSION,
     },
+    encryption::*,
 };
 
 // - external
@@ -383,9 +381,9 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
     info!("Using {} encrpytion algorithm.", encryption_algorithm);
 
     let encryption_key = match encryption_algorithm {
-        EncryptionAlgorithm::AES128GCM => Encryption::gen_random_key(128),
-        EncryptionAlgorithm::AES256GCM => Encryption::gen_random_key(256),
-        EncryptionAlgorithm::CHACHA20POLY1305 => Encryption::gen_random_key(256),
+        EncryptionAlgorithm::AES128GCM => gen_random_key(128),
+        EncryptionAlgorithm::AES256GCM => gen_random_key(256),
+        EncryptionAlgorithm::CHACHA20POLY1305 => gen_random_key(256),
         _ => {
             error!("{}", ERROR_UNKNOWN_ENCRYPTION_ALGORITHM);
             exit(EXIT_STATUS_ERROR)
@@ -393,10 +391,10 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
     };
     debug!("Using encryption key {}", base64engine.encode(encryption_key.clone()));
 
-    let pbe_nonce = Encryption::gen_random_iv();
+    let pbe_nonce = gen_random_iv();
     debug!("Used pbe: nonce {}", base64engine.encode(pbe_nonce));
 
-    let salt = Encryption::gen_random_salt();
+    let salt = gen_random_salt();
     debug!("Used salt: {}", base64engine.encode(salt));
     
     let (pbe_header, encrypted_encryption_key) = match kdf {
@@ -405,7 +403,7 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
             let kdf_parameters = KDFParameters::PBKDF2SHA256Parameters(PBKDF2SHA256Parameters::new(iterations, salt));
             let pbe_header = PBEHeader::new(kdf, pbes.clone(), kdf_parameters, pbe_nonce);
             let encrypted_encryption_key = match pbes {
-                PBEScheme::AES128CBC => match Encryption::encrypt_pbkdf2sha256_aes128cbc(
+                PBEScheme::AES128CBC => match encrypt_pbkdf2sha256_aes128cbc(
                     iterations,
                     &salt,
                     &pbe_nonce,
@@ -418,7 +416,7 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
                         exit(EXIT_STATUS_ERROR);
                     },
                 },
-                PBEScheme::AES256CBC => match Encryption::encrypt_pbkdf2sha256_aes256cbc(
+                PBEScheme::AES256CBC => match encrypt_pbkdf2sha256_aes256cbc(
                     iterations,
                     &salt,
                     &pbe_nonce,
@@ -445,14 +443,14 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
             let kdf_parameters = KDFParameters::ScryptParameters(ScryptParameters::new(logn, r, p, salt));
             let pbe_header = PBEHeader::new(kdf, pbes.clone(), kdf_parameters, pbe_nonce);
             let encrypted_encryption_key = match pbes {
-                PBEScheme::AES128CBC => match Encryption::encrypt_scrypt_aes128cbc(logn, r, p, &salt, &pbe_nonce, password.trim(), &encryption_key) {
+                PBEScheme::AES128CBC => match encrypt_scrypt_aes128cbc(logn, r, p, &salt, &pbe_nonce, password.trim(), &encryption_key) {
                     Ok(val) => val,
                     Err(_) => {
                         error!("{}", ERROR_ENCRYPT_KEY);
                         exit(EXIT_STATUS_ERROR);
                     }
                 },
-                PBEScheme::AES256CBC => match Encryption::encrypt_scrypt_aes256cbc(logn, r, p, &salt, &pbe_nonce, password.trim(), &encryption_key) {
+                PBEScheme::AES256CBC => match encrypt_scrypt_aes256cbc(logn, r, p, &salt, &pbe_nonce, password.trim(), &encryption_key) {
                     Ok(val) => val,
                     Err(_) => {
                         error!("{}", ERROR_ENCRYPT_KEY);
@@ -473,7 +471,7 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
             let kdf_parameters = KDFParameters::Argon2idParameters(Argon2idParameters::new(mem_cost, lanes, iterations, salt));
             let pbe_header = PBEHeader::new(kdf, pbes.clone(), kdf_parameters, pbe_nonce);
             let encrypted_encryption_key = match pbes {
-                PBEScheme::AES128CBC => match Encryption::encrypt_argon2_aes128cbc(
+                PBEScheme::AES128CBC => match encrypt_argon2_aes128cbc(
                     mem_cost, lanes, iterations, &salt, &pbe_nonce, password.trim(), &encryption_key) {
                     Ok(val) => val,
                     Err(_) => {
@@ -481,7 +479,7 @@ fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
                         exit(EXIT_STATUS_ERROR);
                     }
                 },
-                PBEScheme::AES256CBC => match Encryption::encrypt_argon2_aes256cbc(
+                PBEScheme::AES256CBC => match encrypt_argon2_aes256cbc(
                     mem_cost, lanes, iterations, &salt, &pbe_nonce, password.trim(), &encryption_key) {
                     Ok(val) => val,
                     Err(_) => {
