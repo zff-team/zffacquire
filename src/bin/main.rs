@@ -4,11 +4,8 @@ use std::{
     path::PathBuf,
     collections::HashMap,
 };
-
-// - extern crates
-extern crate clap;
-extern crate rand;
-extern crate zff;
+use std::fs::File;
+use std::io::{Read, Write};
 
 // - modules
 mod res;
@@ -16,6 +13,7 @@ mod res;
 // - internal
 use crate::res::{
     get_physical_input_file,
+    get_size_of_inputfile,
     hrs_parser,
     parse_key_val,
     concat_prefix_path,
@@ -49,13 +47,13 @@ use zff::{
         ObjectFlags
     },
     io::{ZffCreationParameters, 
-        zffwriter::{
-            ZffWriter, ZffWriterOutput
-        }
+        zffwriter::ZffWriter,
+        zffstreamer::{ZffStreamer, ZffFilesOutput},
     },
     constants::{
         DEFAULT_COMPRESSION_RATIO_THRESHOLD,
         INITIAL_OBJECT_NUMBER,
+        FIRST_FILE_EXTENSION,
     },
 };
 
@@ -66,6 +64,8 @@ use clap::{
     ValueEnum,
     //builder::TypedValueParser as _,
 };
+use indicatif::{ProgressBar, MultiProgress, ProgressStyle, ProgressDrawTarget};
+use indicatif_log_bridge::LogWrapper;
 use rand::Rng;
 use ed25519_dalek::SigningKey;
 use log::{LevelFilter, error, debug, info};
@@ -117,12 +117,12 @@ struct Cli {
 
     //TODO: Depends on "encrypt"...this has to be configured through clap.
     /// Sets the key derivation function for the password. Default is [scrypt-aes256].
-    #[clap(short='K', long="password-kdf", global=true, required=false, value_enum, default_value="scrypt-aes256")]
+    #[clap(short='K', long="password-kdf", global=true, required=false, value_enum, default_value="scrypt-aes256", requires="encrypt")]
     password_kdf: PasswordKdfValues,
 
     //TODO: Depends on "encrypt"...this has to be configured through clap.
     /// Sets the encryption algorithm. Default is [chacha20poly1305].
-    #[clap(short='E', long="encryption-algorithm", global=true, required=false, value_enum, default_value="chacha20poly1305")]
+    #[clap(short='E', long="encryption-algorithm", global=true, required=false, value_enum, default_value="chacha20poly1305", requires="encrypt")]
     encryption_algorithm: EncryptionAlgorithmValues,
 
     /// This option adds an additional hash algorithm to calculate. You can use this option multiple times. If no algorithm is selected, zffacquire automatically calculates [blake3] hash values.
@@ -157,9 +157,15 @@ struct Cli {
     #[arg(short = 'O', long="custom-description", value_parser = parse_key_val::<String, String>, global=true, required=false)]
     custom_descriptions: Vec<(String, String)>,
 
-    /// The Loglevel
-    #[clap(short='L', long="log-level", value_enum, default_value="full-info", global=true, required=false)]
+    /// Sets the log level. Default is info. Log messages will be written to stderr.
+    #[clap(short='L', long="log-level", value_enum, default_value="info", global=true, required=false)]
     log_level: LogLevel,
+
+    /// Shows a progress bar. Cannot be used with the segment-size option.
+    /// Will be ignored by the extend subcommand.
+    /// The progress bar will be written to stdout.
+    #[clap(short='P', long="progress-bar", global=true, required=false, conflicts_with="segment_size", default_value="false")]
+    progress_bar: bool,
 
     #[clap(subcommand)]
     command: Commands,
@@ -181,6 +187,7 @@ enum Commands {
         /// The the name/path of the output-file WITHOUT file extension. E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
         #[clap(short='o', long="outputfile", global=true, required=false)]
         outputfile: String,
+
     },
     /// acquire logical folder
     #[clap(arg_required_else_help=true)]
@@ -235,9 +242,7 @@ enum LogLevel {
     Error,
     Warn,
     Info,
-    FullInfo,
     Debug,
-    FullDebug,
     Trace
 }
 
@@ -275,6 +280,14 @@ enum EncryptionAlgorithmValues {
     AES128GCM,
     AES256GCM,
     CHACHA20POLY1305,
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProgressBarValue {
+    None,
+    TotalSize(u64),
+    NumberOfFiles(u64),
 }
 
 fn signer(args: &Cli) -> Option<SigningKey> {
@@ -580,26 +593,24 @@ fn setup_optional_parameter(args: &Cli) -> ZffCreationParameters {
 fn main() {
     let args = Cli::parse();
 
+    // setup the progress bar (only neccessary for the progress bar option is set)
+    let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stdout());
+
     let log_level = match args.log_level {
         LogLevel::Error => LevelFilter::Error,
         LogLevel::Warn => LevelFilter::Warn,
         LogLevel::Info => LevelFilter::Info,
-        LogLevel::FullInfo => LevelFilter::Info,
         LogLevel::Debug => LevelFilter::Debug,
-        LogLevel::FullDebug => LevelFilter::Debug,
         LogLevel::Trace => LevelFilter::Trace,
     };
-    if args.log_level == LogLevel::FullInfo || args.log_level == LogLevel::FullDebug {
-        env_logger::builder()
+    let logger = env_logger::builder()
         .format_timestamp_nanos()
         .filter_level(log_level)
-        .init();
-    } else {
-        env_logger::builder()
-        .format_timestamp_nanos()
-        .filter_module(env!("CARGO_PKG_NAME"), log_level)
-        .init();
-    };
+        .build();
+
+    LogWrapper::new(multi.clone(), logger)
+        .try_init()
+        .unwrap();
 
     debug!("Started zffacquire");
 
@@ -640,7 +651,7 @@ fn main() {
             exit(EXIT_STATUS_ERROR);
         }
     };
-    debug!("Set chunk_size zu {}", chunk_size.bytes_as_hrb());
+    debug!("Set chunk_size at {}", chunk_size.bytes_as_hrb());
 
     let mut obj_header = ObjectHeader::new(
         INITIAL_OBJECT_NUMBER,
@@ -655,13 +666,25 @@ fn main() {
     let mut logical_objects = HashMap::new();
     let mut physical_objects = HashMap::new();
 
-    let zffwriter_output = match &args.command {
+    let mut progressbar_value = ProgressBarValue::None;
+
+    let zff_files_output = match &args.command {
         #[cfg(target_family = "windows")]
         Commands::ListDevices {  } => {
             unreachable!()
         },
         Commands::Physical { inputfile, outputfile } => {
-             let file = match get_physical_input_file(inputfile.clone()) {
+            let inputfile_size = match get_size_of_inputfile(inputfile.clone()) {
+                Ok(size) => size,
+                Err(e) => {
+                    let inputfile = inputfile.to_string_lossy();
+                    error!("Following error occurred while trying to get the size of {inputfile}:\n{e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
+            progressbar_value = ProgressBarValue::TotalSize(inputfile_size);
+
+            let file = match get_physical_input_file(inputfile.clone()) {
                 Ok(file) => file,
                 Err(e) => {
                     let inputfile = inputfile.to_string_lossy();
@@ -672,16 +695,18 @@ fn main() {
 
             physical_objects.insert(obj_header, file);
 
-            ZffWriterOutput::NewContainer(outputfile.into())
+            ZffFilesOutput::NewContainer(outputfile.into())
+
         },
         Commands::Logical { inputfiles, outputfile } => {
             let inputfiles: Vec<PathBuf> = inputfiles.iter().map(|x| concat_prefix_path(INPUTFILES_PATH_PREFIX ,x)).collect();
             obj_header.object_type = ObjectType::Logical;
-        
-
+            
+            progressbar_value = ProgressBarValue::NumberOfFiles(inputfiles.len() as u64);
+            
             logical_objects.insert(obj_header, inputfiles);
             
-            ZffWriterOutput::NewContainer(outputfile.into())
+            ZffFilesOutput::NewContainer(outputfile.into())
         },
         Commands::Extend { extend_command, append_files } => {
             match extend_command {
@@ -705,28 +730,122 @@ fn main() {
                 },
             };
 
-            ZffWriterOutput::ExtendContainer(append_files.to_vec())
+            ZffFilesOutput::ExtendContainer(append_files.to_vec())
         },
     };
+    
+    // if the progress bar should be shown, we have to use the ZffStreamer instead of the ZffWriter.
+    if args.progress_bar && progressbar_value != ProgressBarValue::None {
+        let mut zs = match ZffStreamer::with_data(
+            physical_objects,
+            logical_objects,
+            hash_types,
+            optional_parameter,
+            ) {
+            Ok(zs) => zs,
+            Err(e) => {
+                error!("An error occured while trying to create the ZffStreamer object:\n{e}");
+                exit(EXIT_STATUS_ERROR);
+            }
+        };
 
-    let mut zw = match ZffWriter::new(
-        physical_objects,
-        logical_objects,
-        hash_types,
-        zffwriter_output,
-        optional_parameter,
-        ) {
-        Ok(zw) => zw,
-        Err(e) => {
-            error!("An error occured while trying to create the ZffWriter object:\n{e}");
-            exit(EXIT_STATUS_ERROR);
+        let mut outputfile_path = match zff_files_output {
+            ZffFilesOutput::NewContainer(outputfile) => outputfile,
+            _ => {
+                error!("The progress bar can not be used with the 'extend' subcommand.");
+                exit(EXIT_STATUS_ERROR);
+            }
+        };
+        outputfile_path.set_extension(FIRST_FILE_EXTENSION);
+        let mut outputfile = match File::create(outputfile_path) {
+            Ok(file) => file,
+            Err(e) => {
+                error!("An error occured while trying to create the output file:\n{e}");
+                exit(EXIT_STATUS_ERROR);
+            }
+        };
+
+        let pb = match progressbar_value {
+            ProgressBarValue::TotalSize(total_size) => {
+                info!("Total size to dump: {}", total_size.bytes_as_hrb());
+                let pb = multi.add(ProgressBar::new(total_size));
+                pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{decimal_bytes_per_sec}] [{wide_bar:.green/blue}] [{decimal_bytes}/{decimal_total_bytes}] [{percent}%] ({eta})")
+                .unwrap()
+                .progress_chars("=>-"));
+                pb
+            },
+            ProgressBarValue::NumberOfFiles(_) => {
+                let number_of_files_readable = zs.files_left_total();
+                progressbar_value = ProgressBarValue::NumberOfFiles(number_of_files_readable);
+                info!("Number of files to dump: {}", number_of_files_readable);
+                let pb = multi.add(ProgressBar::new(number_of_files_readable));
+                pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.green/blue}] [{pos}/{len} Files] [{percent}%] ({eta})")
+                .unwrap()
+                .progress_chars("=>-"));
+                pb
+            },
+            ProgressBarValue::None => {
+                unreachable!()
+            }
+        };
+
+        // reads the next data with zs.read() (ZffStreamer implements the Read trait) and writes the data to a buffer.
+        // The buffer will be written to the output file.
+        let mut buffer = vec![0u8; chunk_size as usize];
+        loop {
+            // Set the position of the progress bar, depending on the appropriate type
+            match progressbar_value {
+                ProgressBarValue::TotalSize(_) => pb.set_position(zs.current_chunk_number()*chunk_size),
+                ProgressBarValue::NumberOfFiles(total_files) => pb.set_position(total_files-zs.files_left_total()),
+                ProgressBarValue::None => (),
+            }
+            
+            match zs.read(&mut buffer) {
+                Ok(0) => {
+                    break;
+                },
+                Ok(n) => {
+                    match outputfile.write_all(&buffer[..n]) {
+                        Ok(_) => (),
+                        Err(e) => {
+                            error!("An error occured while trying to write to the output file:\n{e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    }
+                },
+                Err(e) => {
+                    error!("An error occured while trying to read from the input file:\n{e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            }
         }
-    };
+        match progressbar_value {
+            ProgressBarValue::TotalSize(total_size) => info!("{} dumped. Finishing container...", (total_size.bytes_as_hrb())),
+            ProgressBarValue::NumberOfFiles(total_files) => info!("{} files dumped. Finishing container...", total_files-zs.files_left_total()),
+            ProgressBarValue::None => (),
+        }
+        pb.finish();
 
-    if let Err(e) = zw.generate_files() {
-        error!("An error occured while filling the zff container:\n {e}");
-        exit(EXIT_STATUS_ERROR);
-    };
+    } else {
+        let mut zs = match ZffStreamer::with_data(
+            physical_objects,
+            logical_objects,
+            hash_types,
+            optional_parameter,
+            ) {
+            Ok(zw) => zw,
+            Err(e) => {
+                error!("An error occured while trying to create the ZffWriter object:\n{e}");
+                exit(EXIT_STATUS_ERROR);
+            }
+        };
+
+        if let Err(e) = zs.generate_files(zff_files_output) {
+            error!("An error occured while filling the zff container:\n {e}");
+            exit(EXIT_STATUS_ERROR);
+        };
+    }
+
     info!("Zff file(s) successfully created");
     exit(EXIT_STATUS_SUCCESS);
 }

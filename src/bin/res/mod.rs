@@ -31,9 +31,7 @@ use comfy_table::{
 use windows_drives::drive::{BufferedPhysicalDrive, BufferedHarddiskVolume};
 #[cfg(target_family = "windows")]
 use winapi::{
-    shared::{
-        minwindef::{MAX_PATH, DWORD},
-    },
+    shared::minwindef::{MAX_PATH, DWORD},
     um::{
         fileapi::{
             GetVolumeInformationByHandleW, 
@@ -217,4 +215,36 @@ fn open_physical_drive(input_file: PathBuf) -> Result<File> {
 
 pub(crate) fn get_physical_input_file(input_file: PathBuf) -> Result<impl Read> {
     open_physical_drive(input_file)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn get_size_of_inputfile(input_file: PathBuf) -> Result<u64> {
+    let is_device = input_file.starts_with("UNIX_BASE_DEV");
+    let input_file = concat_prefix_path(INPUTFILES_PATH_PREFIX, input_file);
+    if !is_device {
+        let metadata = std::fs::metadata(input_file)?;
+        return Ok(metadata.len());
+    } else {
+        let block_device = input_file.strip_prefix(UNIX_BASE_DEV).unwrap();
+        let block_device = block_device.to_string_lossy();
+        let udev_device = udev::Device::from_subsystem_sysname(
+            String::from(UDEV_SUBSYSTEM_BLOCK),
+            String::from(block_device)
+        ).unwrap();
+        let size = udev_device.attribute_value(UDEV_ATTRIBUTE_SIZE).unwrap();
+        let size = size.to_string_lossy().parse::<u64>()?;
+        Ok(size)
+    }
+}
+
+#[cfg(target_family = "windows")]
+pub(crate) fn get_size_of_inputfile(input_file: PathBuf) -> Result<u64> {
+    unimplemented!()
+}
+
+#[cfg(all(target_family = "unix", not(target_os = "linux")))]
+pub(crate) fn get_size_of_inputfile(input_file: PathBuf) -> Result<u64> {
+    let input_file = concat_prefix_path(INPUTFILES_PATH_PREFIX, input_file);
+    let metadata = std::fs::metadata(input_file)?;
+    return Ok(metadata.len());
 }
