@@ -223,7 +223,7 @@ pub(crate) fn get_size_of_inputfile(input_file: PathBuf) -> Result<u64> {
     let input_file = concat_prefix_path(INPUTFILES_PATH_PREFIX, input_file);
     if !is_device {
         let metadata = std::fs::metadata(input_file)?;
-        return Ok(metadata.len());
+        Ok(metadata.len())
     } else {
         let block_device = input_file.strip_prefix(UNIX_BASE_DEV).unwrap();
         let block_device = block_device.to_string_lossy();
