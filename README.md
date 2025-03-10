@@ -1,6 +1,6 @@
 # zffacquire
 
-```zffacquire``` is a command line utility for acquiring images and/or logical file/folder structures into the forensic format Zff.
+```zffacquire``` is a command line utility for acquiring images, memory dumps and/or logical file/folder structures into the forensic format Zff.
 
 # Installation
 

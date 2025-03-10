@@ -2,7 +2,9 @@
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::exit;
-use std::io::Read;
+use std::io::{Read, Cursor};
+use std::ops::Range;
+
 #[cfg(target_family = "windows")]
 use std::{io, ptr};
 
@@ -10,9 +12,13 @@ use std::{io, ptr};
 pub mod constants;
 pub mod traits;
 pub mod list_devices;
+#[cfg(target_os = "linux")]
+pub mod memory_reader;
+
+use super::*;
+use memory_reader::Emd;
 
 // - internal
-use constants::*;
 #[cfg(target_family = "windows")]
 use traits::HumanReadable;
 
@@ -213,8 +219,14 @@ fn open_physical_drive(input_file: PathBuf) -> Result<File> {
 }
 
 
-pub(crate) fn get_physical_input_file(input_file: PathBuf) -> Result<impl Read> {
-    open_physical_drive(input_file)
+pub(crate) fn get_physical_input_file(input_file: PathBuf) -> Result<Box<dyn Read>> {
+    Ok(Box::new(open_physical_drive(input_file)?))
+}
+
+pub(crate) fn get_memory_reader(memory_reader_type: MemoryReaderType) -> Result<Box<dyn Read>> {
+    match memory_reader_type {
+        MemoryReaderType::Emd => Ok(Box::new(Emd::new()?)),
+    }
 }
 
 #[cfg(target_os = "linux")]

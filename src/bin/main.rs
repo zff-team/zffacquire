@@ -12,6 +12,8 @@ mod res;
 
 // - internal
 use crate::res::{
+    memory_reader::{MemoryReaderType, memory_size},
+    get_memory_reader,
     get_physical_input_file,
     get_size_of_inputfile,
     hrs_parser,
@@ -69,8 +71,12 @@ use indicatif::{ProgressBar, MultiProgress, ProgressStyle, ProgressDrawTarget};
 use indicatif_log_bridge::LogWrapper;
 use rand::Rng;
 use ed25519_dalek::SigningKey;
-use log::{LevelFilter, error, debug, info};
+use log::{LevelFilter, error, debug, info, warn};
 use base64::{Engine, engine::general_purpose::STANDARD as base64engine};
+use procfs::process::{Process, MMPermissions};
+use aya::{programs::UProbe, Ebpf};
+use aya::maps::{MapData, Queue};
+use emd_common::*;
 
 #[derive(Parser)]
 #[clap(about, version, author, override_usage="zffacquire <SUBCOMMAND> [OPTIONS]")]
@@ -172,7 +178,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// acquire a physical image
+    /// Acquire a physical image
     #[clap(arg_required_else_help=true)]
     Physical {
         /// The input file. This should be your device to dump. This field is REQUIRED.
@@ -183,24 +189,32 @@ enum Commands {
         #[clap(short='i', long="inputfile", required=true)]
         inputfile: PathBuf,
 
-        /// The the name/path of the output-file WITHOUT file extension. E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
+        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
         #[clap(short='o', long="outputfile", global=true, required=false)]
         outputfile: String,
 
     },
-    /// acquire logical folder
+    /// Acquire logical folder
     #[clap(arg_required_else_help=true)]
     Logical {
         /// The input folders. You can use this option multiple times. This field is REQUIRED.
         #[clap(short='i', long="inputfiles", required=true)]
         inputfiles: Vec<PathBuf>,
 
-        /// The the name/path of the output-file WITHOUT file extension. E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
+        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
         #[clap(short='o', long="outputfile", global=true, required=false)]
         outputfile: String,
     },
 
-    /// extends an existing zff file
+    #[cfg(target_os = "linux")]
+    /// Acquire the physical memory (root some specific capabilities are necessary).
+    Memory {
+        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
+        #[clap(short='o', long="outputfile", global=true, required=false)]
+        outputfile: String,
+    },
+
+    /// Extend an existing zff file
     #[clap(arg_required_else_help=true)]
     Extend {
         /// Your zXX files, which should be extended.
@@ -660,6 +674,8 @@ fn main() {
         .unwrap();
 
     debug!("Started zffacquire");
+    let pid = std::process::id();
+    info!("Using PID: {pid}");
 
     #[cfg(target_family = "windows")]
     match args.command {
@@ -763,6 +779,40 @@ fn main() {
             outputfile.set_extension(FIRST_FILE_EXTENSION);
             ZffFilesOutput::NewContainer(outputfile)
         },
+        Commands::Memory { outputfile } => {
+            // Bump the memlock rlimit. This is needed for older kernels that don't use the
+            // new memcg based accounting, see https://lwn.net/Articles/837122/
+            let rlim = libc::rlimit {
+                rlim_cur: libc::RLIM_INFINITY,
+                rlim_max: libc::RLIM_INFINITY,
+            };
+            let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
+            if ret != 0 {
+                warn!("remove limit on locked memory failed, ret is: {}", ret);
+            }
+
+            let mem_size = match memory_size() {
+                Ok(size) => size,
+                Err(e) => {
+                    error!("Could not calculate system memory size: {e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
+            progressbar_value = ProgressBarValue::TotalSize(mem_size);
+
+            let memory_reader = match get_memory_reader(MemoryReaderType::Emd) {
+                Ok(memory_reader) => memory_reader,
+                Err(e) => {
+                    error!("Failed to create ebpf based memory reader: {e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
+            physical_objects.insert(obj_header, memory_reader);
+
+            let mut outputfile = PathBuf::from(outputfile);
+            outputfile.set_extension(FIRST_FILE_EXTENSION);
+            ZffFilesOutput::NewContainer(outputfile)
+        },
         Commands::Extend { extend_command, append_files } => {
             setup_deduplication_map(&args, &mut optional_parameter, Some(append_files.to_vec()));
             match extend_command {
@@ -803,7 +853,6 @@ fn main() {
     
     // if the progress bar should be shown, we have to use the ZffStreamer instead of the ZffWriter.
     if args.progress_bar {
-
         let mut zs = match ZffWriter::with_data(
             physical_objects,
             logical_objects,
