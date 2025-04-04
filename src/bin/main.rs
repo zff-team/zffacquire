@@ -591,7 +591,7 @@ fn setup_deduplication_map(
     args: &Cli,
     optional_parameter: &mut ZffCreationParameters<File>,
     segment_file_paths: Option<Vec<PathBuf>>) {
-    let deduplication_map = if args.in_memory_chunk_deduplication {
+    let mut deduplication_map = if args.in_memory_chunk_deduplication {
         DeduplicationChunkMap::new_in_memory_map()
     } else if let Some(path) = &args.on_disk_chunk_deduplication {
         let map = match DeduplicationChunkMap::new_from_path(path) {
@@ -608,6 +608,21 @@ fn setup_deduplication_map(
     let deduplication_metadata = if let Some(segment_file_paths) = segment_file_paths {
         let segment_files = setup_segments(segment_file_paths);
         let zs = setup_zffreader(segment_files);
+        match zs.get_xxhashmaps_unencrypted() {
+            Ok(map) => {
+                for (chunk_no, xxhash) in map {
+                if let Err(e) = deduplication_map.append_entry(xxhash, chunk_no) {
+                    error!("An error occured while trying to append an entry to the deduplication map: {e}");
+                    exit(1);
+                    }
+                }
+            },
+            Err(e) => {
+                error!("An error occured while trying to append an entry to the deduplication map: {e}");
+                exit(1);
+            },
+        };
+
         Some(DeduplicationMetadata {
             deduplication_map: deduplication_map,
             original_zffreader: Some(zs),
