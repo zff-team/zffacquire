@@ -196,7 +196,7 @@ pub(crate) fn memory_size() -> Result<u64> {
 }
 
 fn get_page_offset_base(buffer_queue: &mut Queue<&mut MapData, [u8; BUFFER_SIZE]>) -> Result<u64>{
-    let page_offset_base_addr = get_page_offset_base_address()?;
+    let page_offset_base_addr = get_page_offset_base_address_from_file()?;
     read_kernel_memory(page_offset_base_addr, 8);
     let slice: &[u8] = &buffer_queue.pop(0)?[..8];
     Ok(u64::from_le_bytes(slice.try_into()?))
