@@ -167,7 +167,7 @@ struct Cli {
     #[clap(short='L', long="log-level", value_enum, default_value="info", global=true, required=false)]
     log_level: LogLevel,
 
-    /// Shows a progress bar. **Will be ignored by the extend subcommand**.
+    /// Shows a progress bar.
     /// The progress bar will be written to stdout.
     #[clap(short='P', long="progress-bar", global=true, required=false, default_value="false")]
     progress_bar: bool,
@@ -248,6 +248,9 @@ enum ExtendSubcommands {
         #[clap(short='i', long="inputfiles", required=true)]
         inputfiles: Vec<PathBuf>,
     },
+    /// Acquire the physical memory (root some specific capabilities are necessary).
+    #[clap(arg_required_else_help=true)]
+    Memory { }
 }
 
 #[derive(ValueEnum, Clone, PartialEq)]
@@ -551,7 +554,7 @@ fn object_description_header(args: &Cli) -> DescriptionHeader {
 }
 
 fn setup_optional_parameter<R: Read + Seek>(args: &Cli) -> ZffCreationParameters<R> {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     let description_notes = &args.description_notes;
     let sign_keypair = signer(args);
@@ -575,7 +578,7 @@ fn setup_optional_parameter<R: Read + Seek>(args: &Cli) -> ZffCreationParameters
         }
     };
 
-    let unique_identifier = rng.gen();
+    let unique_identifier = rng.random();
 
     ZffCreationParameters {
         signature_key: sign_keypair,
@@ -859,6 +862,36 @@ fn main() {
                     };
                     physical_objects.insert(obj_header, file);
                 },
+                ExtendSubcommands::Memory {  } => {
+                    // Bump the memlock rlimit. This is needed for older kernels that don't use the
+                    // new memcg based accounting, see https://lwn.net/Articles/837122/
+                    let rlim = libc::rlimit {
+                        rlim_cur: libc::RLIM_INFINITY,
+                        rlim_max: libc::RLIM_INFINITY,
+                    };
+                    let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
+                    if ret != 0 {
+                        warn!("remove limit on locked memory failed, ret is: {}", ret);
+                    }
+
+                    let mem_size = match memory_size() {
+                        Ok(size) => size,
+                        Err(e) => {
+                            error!("Could not calculate system memory size: {e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    };
+                    progressbar_value = ProgressBarValue::TotalSize(mem_size);
+
+                    let memory_reader = match get_memory_reader(MemoryReaderType::Emd) {
+                        Ok(memory_reader) => memory_reader,
+                        Err(e) => {
+                            error!("Failed to create ebpf based memory reader: {e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    };
+                    physical_objects.insert(obj_header, memory_reader);
+                },
             };
             extend = true;
 
@@ -889,7 +922,7 @@ fn main() {
             }
         };
 
-        let mut current_extension = outputfile_path.extension().unwrap().to_str().unwrap().to_string(); //should never break while the extension was already set in an earlier state;
+        let mut current_extension = outputfile_path.extension().unwrap().to_str().unwrap().to_string(); //unwrap()'s should never break while the extension was already set in an earlier state;
 
         let mut outputfile = if extend {
             // Prepare the appropriate file to write to.

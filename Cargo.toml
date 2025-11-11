@@ -1,9 +1,9 @@
 [package]
 name = "zffacquire"
 authors = ["ph0llux <ph0llux@pm.me>"]
-version = "2.0.0-rc.1"
-edition = "2021"
-rust-version = "1.60.0"
+version = "2.0.0-rc.2"
+edition = "2024"
+rust-version = "1.85.0"
 license = "MIT OR Apache-2.0"
 description = "A command line utility for acquiring data into the forensic format Zff."
 readme = "README.md"
@@ -22,19 +22,19 @@ bench = true
 [dependencies]
 aya = { version = "0.13.1" }
 base64 = "0.22"
-clap = { version = "4.5.31", features = [ "derive" ] }
-comfy-table = "7.1.4"
+clap = { version = "4.5.51", features = [ "derive" ] }
+comfy-table = "7.2.1"
 ed25519-dalek = { version = "2.0.0", features = [ "rand_core", "digest" ] }
-env_logger = "0.11.7"
-indicatif = "0.17.11"
+env_logger = "0.11.8"
+indicatif = "0.18.3"
 indicatif-log-bridge = "0.2.3"
-log = "0.4.26"
+log = "0.4.28"
 libc = { version = "0.2.159", default-features = false }
-procfs = { version = "0.17" }
-rand = "0.8.5"
-rpassword = "7.2.0"
+procfs = { version = "0.18" }
+rand = "0.9.2"
+rpassword = "7.4.0"
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.8.20"
+toml = "0.9.8"
 zff = { version = "3.0.0-rc.4", features = [ "log" ] }
 
 # platform specific dependencies
@@ -44,8 +44,8 @@ winapi = { version = "0.3.9", features = ["handleapi", "fileapi", "winerror", "m
 
 [target.'cfg(target_os = "linux")'.dependencies]
 udev = "0.9.3"
-emd-ebpf = { version = "1.0.4"}
-emd-common = { version = "0.4.1", features = ["std"]}
+emd-ebpf = { version = "1.0.7"}
+emd-common = { version = "0.5.0", features = ["std"]}
 
 [profile.release]
 lto = true              # enables link time optimization

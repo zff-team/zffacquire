@@ -38,7 +38,7 @@ impl Emd {
         program.attach(None, offset, PROC_SELF_EXE, None)?;
 
         debug!("Initializing buffer queue.");
-        let mut buffer_queue = Queue::try_from(ebpf.map_mut("BUFFER").unwrap())?;
+        let mut buffer_queue = Queue::try_from(ebpf.map_mut("BUFFER_QUEUE").unwrap())?;
 
         let page_offset_base = get_page_offset_base(&mut buffer_queue)?;
         let system_ram_ranges = extract_mem_range(SEPARATOR_SYSTEM_RAM)?;
@@ -51,6 +51,7 @@ impl Emd {
             &mut inner_range_position,
             page_offset_base
         );
+
         let remaining_buffer = internal_buffer.len();
 
         Ok(Self {
@@ -64,7 +65,7 @@ impl Emd {
     }
 
     fn fill_buffer(&mut self) {
-        let mut buffer_queue = Queue::try_from(self.ebpf.map_mut("BUFFER").unwrap()).unwrap();
+        let mut buffer_queue = Queue::try_from(self.ebpf.map_mut("BUFFER_QUEUE").unwrap()).unwrap();
         let internal_buffer = get_next_buffer_value(
             &mut buffer_queue,
             &self.system_ram_ranges,
@@ -129,6 +130,11 @@ fn get_next_buffer_value(
                 inner_range_position.offset = 0;
                 continue;
             }
+            
+            let mut lime_header = LimeHeader::default();
+            lime_header.start_address = position_offset;
+            lime_header.end_address = position_offset + dump_size as u64;
+            buffer.extend(lime_header.as_bytes());
 
             read_kernel_memory(mapping_offset+position_offset, dump_size);
             let queue_elements = calc_queue_elements(dump_size);
@@ -171,11 +177,11 @@ fn get_next_buffer_value(
         buffer
     }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[inline(never)]
 pub extern "C" fn _read_kernel_memory(_src_address: u64, _dump_size: usize) {}
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[inline(never)]
 fn read_kernel_memory(offset: u64, dump_size: usize) {
     let func: extern "C" fn(u64, usize) = _read_kernel_memory;
