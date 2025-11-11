@@ -225,7 +225,7 @@ fn open_physical_drive(input_file: PathBuf) -> Result<File> {
 pub(crate) fn get_physical_input_file(input_file: PathBuf) -> Result<Box<dyn Read>> {
     Ok(Box::new(open_physical_drive(input_file)?))
 }
-
+#[cfg(target_os = "linux")]
 pub(crate) fn get_memory_reader(memory_reader_type: MemoryReaderType) -> Result<Box<dyn Read>> {
     match memory_reader_type {
         MemoryReaderType::Emd => Ok(Box::new(Emd::new()?)),
