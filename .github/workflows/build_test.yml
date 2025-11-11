@@ -18,6 +18,7 @@ jobs:
         include:
           - os: ubuntu-22.04
             libacl: libacl1-dev
+            pkg_config: pkg-config
             toolchain: stable
             target: x86_64-unknown-linux-gnu
             name: Linux (Ubuntu 22.04)
@@ -43,9 +44,9 @@ jobs:
         components: clippy
         default: true
     
-    - name: Install acl-deps (Linux only)
+    - name: Install deps (Linux only)
       if: matrix.os == 'ubuntu-22.04'
-      run: sudo apt-get install -y ${{ matrix.libacl }}
+      run: sudo apt-get install -y ${{ matrix.libacl }} ${{ matrix.pkg_config }}
 
     - name: Build ${{ matrix.target }}
       run: cargo clippy --verbose --all-features --target ${{ matrix.target }}
