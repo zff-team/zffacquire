@@ -12,14 +12,17 @@ mod res;
 
 // - internal
 use crate::res::{
-    memory_reader::{MemoryReaderType, memory_size},
-    get_memory_reader,
     get_physical_input_file,
     get_size_of_inputfile,
     hrs_parser,
     parse_key_val,
     concat_prefix_path,
     constants::*,
+};
+#[cfg(target_os = "linux")]
+use crate::res::{
+    memory_reader::{MemoryReaderType, memory_size},
+    get_memory_reader,
 };
 
 #[cfg(target_family = "windows")]
@@ -73,9 +76,15 @@ use rand::Rng;
 use ed25519_dalek::SigningKey;
 use log::{LevelFilter, error, debug, info, warn};
 use base64::{Engine, engine::general_purpose::STANDARD as base64engine};
+#[cfg(target_os = "linux")]
 use procfs::process::{Process, MMPermissions};
-use aya::{programs::UProbe, Ebpf};
-use aya::maps::{MapData, Queue};
+#[cfg(target_os = "linux")]
+use aya::{
+    programs::UProbe, 
+    Ebpf,
+    maps::{MapData, Queue},
+};
+#[cfg(target_os = "linux")]
 use emd_common::*;
 
 #[derive(Parser)]

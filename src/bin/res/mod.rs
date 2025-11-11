@@ -1,3 +1,6 @@
+// - Parent
+use super::*;
+
 //STD
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -15,7 +18,7 @@ pub mod list_devices;
 #[cfg(target_os = "linux")]
 pub mod memory_reader;
 
-use super::*;
+#[cfg(target_os = "linux")]
 use memory_reader::Emd;
 
 // - internal
