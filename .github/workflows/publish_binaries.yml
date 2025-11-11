@@ -19,6 +19,7 @@ jobs:
           - os: ubuntu-22.04
             libacl: libacl1-dev
             pkg_config: pkg-config
+            libudev: libudev-dev
             aarch64-compiler: gcc-aarch64-linux-gnu
             toolchain: stable
             target: x86_64-unknown-linux-gnu
@@ -52,7 +53,7 @@ jobs:
     
     - name: Install deps (Linux only)
       if: matrix.os == 'ubuntu-22.04'
-      run: sudo apt-get install -y ${{ matrix.libacl }} ${{ matrix.aarch64-compiler }} ${{ matrix.pkg_config }}
+      run: sudo apt-get install -y ${{ matrix.libacl }} ${{ matrix.aarch64-compiler }} ${{ matrix.pkg_config }} ${{ matrix.libudev }}
     
     - name: Build ${{ matrix.target }}
       run: cargo build --release --target ${{ matrix.target }}

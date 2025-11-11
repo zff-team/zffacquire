@@ -19,6 +19,7 @@ jobs:
           - os: ubuntu-22.04
             libacl: libacl1-dev
             pkg_config: pkg-config
+            libudev: libudev-dev
             toolchain: stable
             target: x86_64-unknown-linux-gnu
             name: Linux (Ubuntu 22.04)
@@ -46,7 +47,7 @@ jobs:
     
     - name: Install deps (Linux only)
       if: matrix.os == 'ubuntu-22.04'
-      run: sudo apt-get install -y ${{ matrix.libacl }} ${{ matrix.pkg_config }}
+      run: sudo apt-get install -y ${{ matrix.libacl }} ${{ matrix.pkg_config }} ${{ matrix.libudev }}
 
     - name: Build ${{ matrix.target }}
       run: cargo clippy --verbose --all-features --target ${{ matrix.target }}
