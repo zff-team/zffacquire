@@ -248,6 +248,7 @@ enum ExtendSubcommands {
         #[clap(short='i', long="inputfiles", required=true)]
         inputfiles: Vec<PathBuf>,
     },
+    #[cfg(target_os = "linux")]
     /// Acquire the physical memory (root some specific capabilities are necessary).
     #[clap(arg_required_else_help=true)]
     Memory { }
@@ -797,6 +798,7 @@ fn main() {
             outputfile.set_extension(FIRST_FILE_EXTENSION);
             ZffFilesOutput::NewContainer(outputfile)
         },
+        #[cfg(target_os = "linux")]
         Commands::Memory { outputfile } => {
             // Bump the memlock rlimit. This is needed for older kernels that don't use the
             // new memcg based accounting, see https://lwn.net/Articles/837122/
@@ -862,6 +864,7 @@ fn main() {
                     };
                     physical_objects.insert(obj_header, file);
                 },
+                #[cfg(target_os = "linux")]
                 ExtendSubcommands::Memory {  } => {
                     // Bump the memlock rlimit. This is needed for older kernels that don't use the
                     // new memcg based accounting, see https://lwn.net/Articles/837122/
