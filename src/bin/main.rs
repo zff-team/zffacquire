@@ -1,11 +1,16 @@
 // - STD
 use std::{
     process::exit,
-    path::PathBuf,
+    path::{PathBuf, Path},
     collections::HashMap,
 };
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write, SeekFrom, Seek};
+use std::io::{Read, Write, SeekFrom, Seek, Cursor};
+use std::error::Error;
+use std::ops::Range;
+
+#[cfg(target_family = "windows")]
+use std::{io, ptr};
 
 // - modules
 mod res;
@@ -29,6 +34,7 @@ use crate::res::{
 use crate::res::list_devices::print_devices_table;
 
 use res::traits::HumanReadable;
+use zff::{LogicalObjectSource, LogicalObjectSourceFilesystem};
 use zff::header::DeduplicationMetadata;
 use zff::io::zffreader::ZffReader;
 use zff::io::zffwriter::SegmentationState;
@@ -76,6 +82,7 @@ use rand::Rng;
 use ed25519_dalek::SigningKey;
 use log::{LevelFilter, error, debug, info, warn};
 use base64::{Engine, engine::general_purpose::STANDARD as base64engine};
+use phollpers::compression::decompress;
 #[cfg(target_os = "linux")]
 use procfs::process::{Process, MMPermissions};
 #[cfg(target_os = "linux")]
@@ -83,6 +90,34 @@ use aya::{
     programs::UProbe, 
     Ebpf,
     maps::{MapData, Queue},
+};
+#[cfg(target_family = "windows")]
+use comfy_table::{
+    Table, Attribute, Cell, ContentArrangement,
+    modifiers::UTF8_ROUND_CORNERS,
+    presets::UTF8_FULL,
+};
+
+#[cfg(target_family = "windows")]
+use windows_drives::drive::{BufferedPhysicalDrive, BufferedHarddiskVolume};
+#[cfg(target_family = "windows")]
+use winapi::{
+    shared::minwindef::{MAX_PATH, DWORD},
+    um::{
+        fileapi::{
+            GetVolumeInformationByHandleW, 
+            FindFirstVolumeW,
+            FindNextVolumeW,
+            QueryDosDeviceW,
+            GetVolumePathNamesForVolumeNameW,
+            OPEN_EXISTING,
+            CreateFileW,
+        },
+        handleapi::{INVALID_HANDLE_VALUE, CloseHandle},
+        ioapiset::DeviceIoControl,
+        winioctl::{IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER, IOCTL_DISK_GET_DRIVE_GEOMETRY, DISK_GEOMETRY},
+        winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE, HANDLE},
+    },
 };
 #[cfg(target_os = "linux")]
 use emd_common::*;
@@ -175,6 +210,13 @@ struct Cli {
     /// Sets the log level. Default is info. Log messages will be written to stderr.
     #[clap(short='L', long="log-level", value_enum, default_value="info", global=true, required=false)]
     log_level: LogLevel,
+
+    /// Tries to uncompress the input file, if necessary. If e.g. the input is a compressed dd file (e.g. my_file.dd.gz)
+    /// zffacquire will try do decompress the input data on-the-fly and read / write the uncompressed data in the 
+    /// zff container. This option will check the magic bytes of the input file and supports 
+    /// gz, bz2, lz4, zst and xz files.
+    #[clap(short='U', long="uncompress-input", global=true, required=false)]
+    uncompress_input: bool,
 
     /// Shows a progress bar.
     /// The progress bar will be written to stdout.
@@ -754,7 +796,7 @@ fn main() {
         flags,
         );
 
-    let mut logical_objects = HashMap::new();
+    let mut logical_objects: HashMap<ObjectHeader, Box<dyn LogicalObjectSource>> = HashMap::new();
     let mut physical_objects = HashMap::new();
 
     let mut progressbar_value;
@@ -778,7 +820,7 @@ fn main() {
             };
             progressbar_value = ProgressBarValue::TotalSize(inputfile_size);
 
-            let file = match get_physical_input_file(inputfile.clone()) {
+            let file = match get_physical_input_file(inputfile.clone(), args.uncompress_input) {
                 Ok(file) => file,
                 Err(e) => {
                     let inputfile = inputfile.to_string_lossy();
@@ -800,8 +842,14 @@ fn main() {
             obj_header.object_type = ObjectType::Logical;
             
             progressbar_value = ProgressBarValue::NumberOfFiles(inputfiles.len() as u64);
-            
-            logical_objects.insert(obj_header, inputfiles);
+            let logical_object_source = match LogicalObjectSourceFilesystem::try_from(inputfiles) {
+                Ok(source) => source,
+                Err(e) => {
+                    error!("Failed to initialize logical object for filesystem data: {e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
+            logical_objects.insert(obj_header, Box::new(logical_object_source));
             
             let mut outputfile = PathBuf::from(outputfile);
             outputfile.set_extension(FIRST_FILE_EXTENSION);
@@ -850,7 +898,14 @@ fn main() {
                     let inputfiles: Vec<PathBuf> = inputfiles.iter().map(|x| concat_prefix_path(INPUTFILES_PATH_PREFIX ,x)).collect();
                     obj_header.object_type = ObjectType::Logical;
                     progressbar_value = ProgressBarValue::NumberOfFiles(inputfiles.len() as u64);
-                    logical_objects.insert(obj_header, inputfiles);
+                    let logical_object_source = match LogicalObjectSourceFilesystem::try_from(inputfiles) {
+                        Ok(source) => source,
+                        Err(e) => {
+                            error!("Failed to initialize logical object for filesystem data: {e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    };
+                    logical_objects.insert(obj_header, Box::new(logical_object_source));
                 },
                 //setup physical objects.
                 ExtendSubcommands::Physical { inputfile } => {
@@ -863,7 +918,7 @@ fn main() {
                         }
                     };
                     progressbar_value = ProgressBarValue::TotalSize(inputfile_size);
-                    let file = match get_physical_input_file(inputfile.clone()) {
+                    let file = match get_physical_input_file(inputfile.clone(), args.uncompress_input) {
                         Ok(file) => file,
                         Err(e) => {
                             let inputfile = inputfile.to_string_lossy();

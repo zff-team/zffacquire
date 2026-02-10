@@ -1,16 +1,6 @@
 // - Parent
 use super::*;
 
-//STD
-use std::error::Error;
-use std::path::{Path, PathBuf};
-use std::process::exit;
-use std::io::{Read, Cursor};
-use std::ops::Range;
-
-#[cfg(target_family = "windows")]
-use std::{io, ptr};
-
 // - modules
 pub mod constants;
 pub mod traits;
@@ -22,46 +12,11 @@ pub mod memory_reader;
 use memory_reader::Emd;
 
 // - internal
-#[cfg(target_family = "windows")]
+#[cfg(target_os = "windows")]
 use traits::HumanReadable;
 
 // - types
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
-
-// - external
-#[cfg(target_family = "windows")]
-use comfy_table::{
-    Table, Attribute, Cell, ContentArrangement,
-    modifiers::UTF8_ROUND_CORNERS,
-    presets::UTF8_FULL,
-};
-
-#[cfg(target_family = "windows")]
-use windows_drives::drive::{BufferedPhysicalDrive, BufferedHarddiskVolume};
-#[cfg(target_family = "windows")]
-use winapi::{
-    shared::minwindef::{MAX_PATH, DWORD},
-    um::{
-        fileapi::{
-            GetVolumeInformationByHandleW, 
-            FindFirstVolumeW,
-            FindNextVolumeW,
-            QueryDosDeviceW,
-            GetVolumePathNamesForVolumeNameW,
-            OPEN_EXISTING,
-            CreateFileW,
-        },
-        handleapi::{INVALID_HANDLE_VALUE, CloseHandle},
-        ioapiset::DeviceIoControl,
-        winioctl::{IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER, IOCTL_DISK_GET_DRIVE_GEOMETRY, DISK_GEOMETRY},
-        winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE, HANDLE},
-    },
-};
-
-#[cfg(target_family = "unix")]
-use std::fs::File;
-
-use log::error;
 
 
 pub(crate) fn hrs_parser<V: Into<String>>(value: V) -> Option<u64> {
@@ -147,7 +102,7 @@ pub fn concat_prefix_path<P: AsRef<Path>, S: AsRef<Path>>(_: P, path: S) -> Path
 }
 
 #[cfg(target_family = "windows")]
-fn open_physical_drive(drive_path: PathBuf) -> Result<Box<dyn Read>> {
+fn open_physical_drive(drive_path: PathBuf) -> Result<Box<dyn Read + Seek>> {
     match open_physical_disk(drive_path.clone()) {
         Ok(drive) => Ok(Box::new(drive)),
         Err(_) => match open_harddisk_volume(drive_path) {
@@ -222,9 +177,15 @@ fn open_physical_drive(input_file: PathBuf) -> Result<File> {
 }
 
 
-pub(crate) fn get_physical_input_file(input_file: PathBuf) -> Result<Box<dyn Read>> {
-    Ok(Box::new(open_physical_drive(input_file)?))
+pub(crate) fn get_physical_input_file(input_file: PathBuf, try_uncompress: bool) -> Result<Box<dyn Read>> {
+    let input_file = open_physical_drive(input_file)?;
+    if try_uncompress {
+        Ok(decompress(input_file)?)
+    } else {
+        Ok(Box::new(input_file))
+    }
 }
+
 #[cfg(target_os = "linux")]
 pub(crate) fn get_memory_reader(memory_reader_type: MemoryReaderType) -> Result<Box<dyn Read>> {
     match memory_reader_type {
