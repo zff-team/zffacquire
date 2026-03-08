@@ -34,7 +34,7 @@ use crate::res::{
 use crate::res::list_devices::print_devices_table;
 
 use res::traits::HumanReadable;
-use zff::{LogicalObjectSource, LogicalObjectSourceFilesystem};
+use zff::{LogicalObjectSource, LogicalObjectSourceFilesystem, LogicalObjectSourceTar};
 use zff::header::DeduplicationMetadata;
 use zff::io::zffreader::ZffReader;
 use zff::io::zffwriter::SegmentationState;
@@ -266,6 +266,7 @@ enum Commands {
     },
 
     /// Extend an existing zff file
+    /// TODO: Extend Convert from other zff files.
     #[clap(arg_required_else_help=true)]
     Extend {
         /// Your zXX files, which should be extended.
@@ -274,6 +275,19 @@ enum Commands {
 
         #[clap(subcommand)]
         extend_command: ExtendSubcommands,
+    },
+
+    /// Convert the given file to a zff container.
+    /// currently supported file formats which can be converted: uncompressed tar files.
+    #[clap(arg_required_else_help=true)]
+    Convert {
+        /// The input file. This field is REQUIRED.
+        #[clap(short='i', long="inputfile", required=true)]
+        inputfile: PathBuf,
+
+        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
+        #[clap(short='o', long="outputfile", global=true, required=false)]
+        outputfile: String,
     },
 
     #[cfg(target_family = "windows")]
@@ -964,6 +978,23 @@ fn main() {
 
             ZffFilesOutput::ExtendContainer(append_files.to_vec())
         },
+        Commands::Convert { inputfile, outputfile } => {
+            setup_deduplication_map(&args, &mut optional_parameter, None);
+            obj_header.object_type = ObjectType::Logical;
+            info!("Initializing tar file. This could take a few minutes, depending on the tar file size.");
+            let logical_object_source = match LogicalObjectSourceTar::try_from(inputfile) {
+                Ok(source) => source,
+                Err(e) => {
+                    error!("Failed to initialize logical object for tar file: {e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
+            progressbar_value = ProgressBarValue::NumberOfFiles(logical_object_source.remaining_elements() as u64);
+            logical_objects.insert(obj_header, Box::new(logical_object_source));
+            let mut outputfile = PathBuf::from(outputfile);
+            outputfile.set_extension(FIRST_FILE_EXTENSION);
+            ZffFilesOutput::NewContainer(outputfile)
+        }
     };
     
     // if the progress bar should be shown, we have to use the ZffStreamer instead of the ZffWriter.
