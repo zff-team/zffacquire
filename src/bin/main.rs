@@ -278,7 +278,7 @@ enum Commands {
     },
 
     /// Convert the given file to a zff container.
-    /// currently supported file formats which can be converted: uncompressed tar files.
+    /// currently supported file formats which can be converted: .tar, .tar.gz, tar.bz2, .tar.xz, .tar.zst, .tar.lz4.
     #[clap(arg_required_else_help=true)]
     Convert {
         /// The input file. This field is REQUIRED.
