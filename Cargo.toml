@@ -33,7 +33,7 @@ rpassword = "7.4.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.9.8"
 phollpers ={ version = "0.1.0" , features = ["compression"]}
-zff = { path="../zff", features = [ "log", "input_tar" ] }
+zff = { path="../zff", features = [ "log", "alternative_inputs" ] }
 
 # platform specific dependencies
 [target.'cfg(target_family = "windows")'.dependencies]
