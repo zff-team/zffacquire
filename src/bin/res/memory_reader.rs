@@ -107,7 +107,7 @@ impl Read for Emd {
 
 fn get_next_buffer_value(
     buffer_queue: &mut Queue<&mut MapData, [u8; BUFFER_SIZE]>,
-    system_ram_range: &Vec<Range<u64>>, 
+    system_ram_range: &[Range<u64>], 
     inner_range_position: &mut InnerRangePosition,
     mapping_offset: u64,
     ) -> Vec<u8> {
@@ -115,7 +115,7 @@ fn get_next_buffer_value(
         let mut buffer = Vec::new();
 
         while remaining > 0 {
-            let range = match system_ram_range.iter().nth(inner_range_position.current_range as usize) {
+            let range = match system_ram_range.get(inner_range_position.current_range as usize) {
                 Some(range) => range,
                 None => return buffer,
             };
@@ -131,9 +131,11 @@ fn get_next_buffer_value(
                 continue;
             }
             
-            let mut lime_header = LimeHeader::default();
-            lime_header.start_address = position_offset;
-            lime_header.end_address = position_offset + dump_size as u64;
+            let lime_header = LimeHeader { 
+                start_address: position_offset, 
+                end_address: position_offset + dump_size as u64, 
+                ..Default::default() 
+            };
             buffer.extend(lime_header.as_bytes());
 
             read_kernel_memory(mapping_offset+position_offset, dump_size);

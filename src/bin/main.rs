@@ -17,12 +17,7 @@ mod res;
 
 // - internal
 use crate::res::{
-    get_physical_input_file,
-    get_size_of_inputfile,
-    hrs_parser,
-    parse_key_val,
-    concat_prefix_path,
-    constants::*,
+    chunk_size, concat_prefix_path, constants::*, get_physical_input_file, get_size_of_inputfile, header_creation::{self, ask_password, create_object_header}, hrs_parser, open_files, parse_key_val
 };
 #[cfg(target_os = "linux")]
 use crate::res::{
@@ -34,11 +29,12 @@ use crate::res::{
 use crate::res::list_devices::print_devices_table;
 
 use res::traits::HumanReadable;
-use zff::{LogicalObjectSource, LogicalObjectSourceFilesystem, LogicalObjectSourceTar};
+use zff::{LogicalObjectSource, LogicalObjectSourceFilesystem};
 use zff::header::DeduplicationMetadata;
 use zff::io::zffreader::ZffReader;
 use zff::io::zffwriter::SegmentationState;
 use zff::{
+    VirtualObjectSourceLogicalTar,
     EncryptionAlgorithm,
     CompressionAlgorithm,
     KDFScheme,
@@ -78,11 +74,12 @@ use clap::{
 };
 use indicatif::{ProgressBar, MultiProgress, ProgressStyle, ProgressDrawTarget};
 use indicatif_log_bridge::LogWrapper;
-use rand::Rng;
+use rand::RngExt;
 use ed25519_dalek::SigningKey;
 use log::{LevelFilter, error, debug, info, warn};
 use base64::{Engine, engine::general_purpose::STANDARD as base64engine};
 use phollpers::compression::decompress;
+
 #[cfg(target_os = "linux")]
 use procfs::process::{Process, MMPermissions};
 #[cfg(target_os = "linux")]
@@ -125,7 +122,6 @@ use emd_common::*;
 #[derive(Parser)]
 #[clap(about, version, author, override_usage="zffacquire <SUBCOMMAND> [OPTIONS]")]
 struct Cli {
-
     /// A general description of all data, which are inside the zff file(s).
     #[clap(short='D', long="description-notes", global=true, required=false)]
     description_notes: Option<String>,
@@ -183,6 +179,7 @@ struct Cli {
     #[clap(short='S', long="sign-data", global=true)]
     sign_data: bool,
 
+    //TODO: requires sign_data?
     /// Your secret EdDSA key, base64 formatted. Could be a Secret key or a keypair.
     #[clap(short='k', long="eddsa-key", global=true, required=false)]
     sign_key: Option<String>,
@@ -277,8 +274,9 @@ enum Commands {
         extend_command: ExtendSubcommands,
     },
 
-    /// Convert the given file to a zff container.
-    /// currently supported file formats which can be converted: .tar, .tar.gz, tar.bz2, .tar.xz, .tar.zst, .tar.lz4.
+    /// Converts the given file to a zff container.
+    /// The original file will *not* be deleted, but the appropriate content will be stored in a zff container.
+    /// Currently supported file formats which can be converted: .tar, .tar.gz, tar.bz2, .tar.xz, .tar.zst, .tar.lz4.
     #[clap(arg_required_else_help=true)]
     Convert {
         /// The input file. This field is REQUIRED.
@@ -371,370 +369,6 @@ enum ProgressBarValue {
     NumberOfFiles(u64),
 }
 
-fn signer(args: &Cli) -> Option<SigningKey> {
-    if !args.sign_data {
-        info!("Signing of data has been disabled.");
-        return None;
-    }
-
-    let sign_key = match &args.sign_key {
-        None => Signature::new_signing_key(),
-        Some(value) => match Signature::new_signingkey_from_base64(value.trim()) {
-            Ok(keypair) => keypair,
-            Err(_) => {
-                error!("{}", ERROR_PARSE_KEY);
-                exit(EXIT_STATUS_ERROR);
-            }
-        }
-    };
-    if args.sign_key.is_some() {
-        debug!("Using private sign key {}", base64engine.encode(sign_key.to_bytes()));
-    } else {
-        info!("Private signature key is {}", base64engine.encode(sign_key.to_bytes()));
-    }
-    info!("Public signature key is {}", base64engine.encode(sign_key.verifying_key()));
-    Some(sign_key)
-}
-
-fn compression_header(args: &Cli) -> CompressionHeader {
-    let compression_algorithm = match args.compression_algorithm {
-        CompressionAlgorithmValues::None => CompressionAlgorithm::None,
-        CompressionAlgorithmValues::Zstd => CompressionAlgorithm::Zstd,
-        CompressionAlgorithmValues::Lz4 => CompressionAlgorithm::Lz4,
-    };
-
-    if args.compression_level > 9 {
-        error!("Invalid value for '--compression-level <COMPRESSION_LEVEL>': number <{}> too large to fit in target type. (Possible values are 1-9)", args.compression_level);
-        exit(EXIT_STATUS_ERROR);    
-    } else if args.compression_level  < 1 {
-        error!("Invalid value for '--compression-level <COMPRESSION_LEVEL>': number <{}> too small to fit in target type. (Possible values are 1-9)", args.compression_level);
-        exit(EXIT_STATUS_ERROR);
-    }
-    
-    if compression_algorithm == CompressionAlgorithm::None {
-        info!("Data will not be compressed");
-    } else {
-        info!("Data will be compressed with {} and level {}", compression_algorithm.to_string(), args.compression_level);
-    }
-
-    CompressionHeader::new(compression_algorithm, args.compression_level, args.compression_threshold)
-}
-
-/// returns the encryption header and the encryption key.
-fn encryption_header(args: &Cli) -> Option<EncryptionHeader> {
-    if !args.encrypt {
-        info!("Object will not be encrypted.");
-        return None;
-    }
-    let password = match rpassword::prompt_password("Enter the encryption password: ") {
-        Ok(pw) => pw,
-        Err(e) => {
-            error!("An error occured while trying to read your password...please use only UTF8 valid characters:\n{e}");
-            exit(EXIT_STATUS_ERROR);
-        }
-    };
-    let verify_pw = match rpassword::prompt_password("Re-enter the encryption password (verify): ") {
-        Ok(pw) => pw,
-        Err(e) => {
-            error!("An error occured while trying to read your password...please use only UTF8 valid characters:\n{e}");
-            exit(EXIT_STATUS_ERROR);
-        }
-    };
-
-    if password != verify_pw {
-        error!("Passwords didn't match.");
-        exit(EXIT_STATUS_ERROR);
-    }
-
-    let (kdf, pbes) = match args.password_kdf {
-        PasswordKdfValues::Pbkdf2Sha256Aes128 => (KDFScheme::PBKDF2SHA256, PBEScheme::AES128CBC),
-        PasswordKdfValues::Pbkdf2Sha256Aes256 => (KDFScheme::PBKDF2SHA256, PBEScheme::AES256CBC),
-        PasswordKdfValues::ScryptAes128 => (KDFScheme::Scrypt, PBEScheme::AES128CBC),
-        PasswordKdfValues::ScryptAes256 => (KDFScheme::Scrypt, PBEScheme::AES256CBC),
-        PasswordKdfValues::Argon2idAes128 => (KDFScheme::Argon2id, PBEScheme::AES256CBC),
-        PasswordKdfValues::Argon2idAes256 => (KDFScheme::Argon2id, PBEScheme::AES256CBC),
-    };
-    info!("Using password based encryption with {}-{}.", kdf, pbes);
-
-    let encryption_algorithm = match args.encryption_algorithm {
-        EncryptionAlgorithmValues::AES128GCM => EncryptionAlgorithm::AES128GCM,
-        EncryptionAlgorithmValues::AES256GCM => EncryptionAlgorithm::AES256GCM,
-        EncryptionAlgorithmValues::CHACHA20POLY1305 => EncryptionAlgorithm::CHACHA20POLY1305,
-    };
-    info!("Using {} encrpytion algorithm.", encryption_algorithm);
-
-    let encryption_key = match encryption_algorithm {
-        EncryptionAlgorithm::AES128GCM => gen_random_key(128),
-        EncryptionAlgorithm::AES256GCM => gen_random_key(256),
-        EncryptionAlgorithm::CHACHA20POLY1305 => gen_random_key(256),
-        _ => {
-            error!("{}", ERROR_UNKNOWN_ENCRYPTION_ALGORITHM);
-            exit(EXIT_STATUS_ERROR)
-        },
-    };
-    debug!("Using encryption key {}", base64engine.encode(encryption_key.clone()));
-
-    let pbe_nonce = gen_random_iv();
-    debug!("Used pbe: nonce {}", base64engine.encode(pbe_nonce));
-
-    let salt = gen_random_salt();
-    debug!("Used salt: {}", base64engine.encode(salt));
-    
-    let (pbe_header, encrypted_encryption_key) = match kdf {
-        KDFScheme::PBKDF2SHA256 => {
-            let iterations = 310000;
-            let kdf_parameters = KDFParameters::PBKDF2SHA256Parameters(PBKDF2SHA256Parameters::new(iterations, salt));
-            let pbe_header = PBEHeader::new(kdf, pbes.clone(), kdf_parameters, pbe_nonce);
-            let encrypted_encryption_key = match pbes {
-                PBEScheme::AES128CBC => match encrypt_pbkdf2sha256_aes128cbc(
-                    iterations,
-                    &salt,
-                    &pbe_nonce,
-                    password.trim(),
-                    &encryption_key,
-                    ) {
-                    Ok(val) => val,
-                    Err(_) => {
-                        error!("{}", ERROR_ENCRYPT_KEY);
-                        exit(EXIT_STATUS_ERROR);
-                    },
-                },
-                PBEScheme::AES256CBC => match encrypt_pbkdf2sha256_aes256cbc(
-                    iterations,
-                    &salt,
-                    &pbe_nonce,
-                    password.trim(),
-                    &encryption_key,
-                    ) {
-                    Ok(val) => val,
-                    Err(_) => {
-                        error!("{}", ERROR_ENCRYPT_KEY);
-                        exit(EXIT_STATUS_ERROR);
-                    }
-                },
-                _ => {
-                    error!("{}", ERROR_UNKNOWN_PASSWORD_KDF);
-                    exit(EXIT_STATUS_ERROR)
-                },
-            };
-            (pbe_header, encrypted_encryption_key)
-        },
-        KDFScheme::Scrypt => {
-            let logn = SCRYPT_LOGN_RECOMMENDED;
-            let r = SCRYPT_R_RECOMMENDED;
-            let p = SCRYPT_P_RECOMMENDED;
-            let kdf_parameters = KDFParameters::ScryptParameters(ScryptParameters::new(logn, r, p, salt));
-            let pbe_header = PBEHeader::new(kdf, pbes.clone(), kdf_parameters, pbe_nonce);
-            let encrypted_encryption_key = match pbes {
-                PBEScheme::AES128CBC => match encrypt_scrypt_aes128cbc(logn, r, p, &salt, &pbe_nonce, password.trim(), &encryption_key) {
-                    Ok(val) => val,
-                    Err(_) => {
-                        error!("{}", ERROR_ENCRYPT_KEY);
-                        exit(EXIT_STATUS_ERROR);
-                    }
-                },
-                PBEScheme::AES256CBC => match encrypt_scrypt_aes256cbc(logn, r, p, &salt, &pbe_nonce, password.trim(), &encryption_key) {
-                    Ok(val) => val,
-                    Err(_) => {
-                        error!("{}", ERROR_ENCRYPT_KEY);
-                        exit(EXIT_STATUS_ERROR);
-                    }
-                },
-                _ => {
-                    error!("{}", ERROR_UNKNOWN_PASSWORD_KDF);
-                    exit(EXIT_STATUS_ERROR)
-                },
-            };
-            (pbe_header, encrypted_encryption_key)
-        },
-        KDFScheme::Argon2id => {
-            let mem_cost = ARGON_MEM_COST_RECOMMENDED;
-            let lanes = ARGON_LANES_RECOMMENDED;
-            let iterations = ARGON_ITERATIONS_RECOMMENDED;
-            let kdf_parameters = KDFParameters::Argon2idParameters(Argon2idParameters::new(mem_cost, lanes, iterations, salt));
-            let pbe_header = PBEHeader::new(kdf, pbes.clone(), kdf_parameters, pbe_nonce);
-            let encrypted_encryption_key = match pbes {
-                PBEScheme::AES128CBC => match encrypt_argon2_aes128cbc(
-                    mem_cost, lanes, iterations, &salt, &pbe_nonce, password.trim(), &encryption_key) {
-                    Ok(val) => val,
-                    Err(_) => {
-                        error!("{}", ERROR_ENCRYPT_KEY);
-                        exit(EXIT_STATUS_ERROR);
-                    }
-                },
-                PBEScheme::AES256CBC => match encrypt_argon2_aes256cbc(
-                    mem_cost, lanes, iterations, &salt, &pbe_nonce, password.trim(), &encryption_key) {
-                    Ok(val) => val,
-                    Err(_) => {
-                        error!("{}", ERROR_ENCRYPT_KEY);
-                        exit(EXIT_STATUS_ERROR);
-                    }
-                },
-                _ => {
-                    error!("{}", ERROR_UNKNOWN_PASSWORD_KDF);
-                    exit(EXIT_STATUS_ERROR)
-                },
-            };
-            (pbe_header, encrypted_encryption_key)
-        },
-        _ => {
-            error!("{}", ERROR_UNKNOWN_PASSWORD_KDF);
-            exit(EXIT_STATUS_ERROR)
-        },
-    };
-    let mut encryption_header = EncryptionHeader::new(pbe_header, encryption_algorithm, encrypted_encryption_key);
-    match encryption_header.decrypt_encryption_key(password) {
-        Ok(_) => (),
-        Err(e) => {
-            error!("{ERROR_ENCRYPT_KEY}:\n{e}");
-            exit(EXIT_STATUS_ERROR);
-        }
-    }
-    Some(encryption_header)
-}
-
-fn object_description_header(args: &Cli) -> DescriptionHeader {
-
-    let mut description_header = DescriptionHeader::new_empty();
-    if let Some(value) = &args.case_number {
-        description_header.set_case_number(value);
-    };
-    if let Some(value) = &args.evidence_number {
-        description_header.set_evidence_number(value);
-    };
-    if let Some(value) = &args.examiner_name {
-        description_header.set_examiner_name(value);
-    };
-    if let Some(value) = &args.notes {
-        description_header.set_notes(value);
-    };
-    for (key, value) in &args.custom_descriptions {
-        description_header.custom_identifier_value(key, value);
-    }
-
-    // add tool-specific stuff
-    description_header.custom_identifier_value(TOOLNAME_KEY, TOOLNAME_VALUE);
-    description_header.custom_identifier_value(TOOLVERSION_KEY, TOOLVERSION_VALUE);
-
-    description_header
-}
-
-fn setup_optional_parameter<R: Read + Seek>(args: &Cli) -> ZffCreationParameters<R> {
-    let mut rng = rand::rng();
-
-    let description_notes = &args.description_notes;
-    let sign_keypair = signer(args);
-    let target_segment_size = if let Some(segment_size) = &args.segment_size {
-        match hrs_parser(segment_size) {
-            Some(val) => Some(val),
-            None => {
-                error!("{}{}", ERROR_UNPARSABLE_SEGMENT_SIZE_VALUE, segment_size);
-                exit(EXIT_STATUS_ERROR);
-            }
-        }
-    } else {
-        None
-    };
-
-    let chunkmap_size = match hrs_parser(&args.chunkmap_size) {
-        Some(val) => Some(val),
-        None => {
-            error!("{}{}", ERROR_UNPARSABLE_CHUNKMAP_SIZE_VALUE, &args.chunkmap_size);
-            exit(EXIT_STATUS_ERROR);
-        }
-    };
-
-    let unique_identifier = rng.random();
-
-    ZffCreationParameters {
-        signature_key: sign_keypair,
-        target_segment_size,
-        chunkmap_size,
-        deduplication_metadata: None,
-        unique_identifier,
-        description_notes: description_notes.clone(),
-    }
-}
-
-fn setup_deduplication_map(
-    args: &Cli,
-    optional_parameter: &mut ZffCreationParameters<File>,
-    segment_file_paths: Option<Vec<PathBuf>>) {
-    let mut deduplication_map = if args.in_memory_chunk_deduplication {
-        DeduplicationChunkMap::new_in_memory_map()
-    } else if let Some(path) = &args.on_disk_chunk_deduplication {
-        let map = match DeduplicationChunkMap::new_from_path(path) {
-            Ok(map) => map,
-            Err(e) => {
-                error!("cannot create deduplication chunkmap: {e}");
-                exit(EXIT_STATUS_ERROR);
-            }
-        };
-        map
-    } else {
-        return;
-    };
-    let deduplication_metadata = if let Some(segment_file_paths) = segment_file_paths {
-        let segment_files = setup_segments(segment_file_paths);
-        let zs = setup_zffreader(segment_files);
-        match zs.get_xxhashmaps_unencrypted() {
-            Ok(map) => {
-                for (chunk_no, xxhash) in map {
-                if let Err(e) = deduplication_map.append_entry(xxhash, chunk_no) {
-                    error!("An error occured while trying to append an entry to the deduplication map: {e}");
-                    exit(1);
-                    }
-                }
-            },
-            Err(e) => {
-                error!("An error occured while trying to append an entry to the deduplication map: {e}");
-                exit(1);
-            },
-        };
-
-        Some(DeduplicationMetadata {
-            deduplication_map: deduplication_map,
-            original_zffreader: Some(zs),
-        })
-    } else {
-        Some(DeduplicationMetadata {
-            deduplication_map: deduplication_map,
-            original_zffreader: None,
-        })
-    };
-    optional_parameter.deduplication_metadata = deduplication_metadata;
-}
-
-fn setup_zffreader<R: Read + Seek>(segment_files: Vec<R>) -> ZffReader<R> {
-    let mut zs = match ZffReader::with_reader(segment_files) {
-        Ok(zs) => zs,
-        Err(e) => {
-            error!("Error initializing ZffReader: {}", e);
-            exit(EXIT_STATUS_ERROR);
-        }
-    };
-    if let Err(e) = zs.initialize_objects_all() { //TODO: initialize only the unencrypted objects
-        error!("Error initializing objects: {}", e);
-        exit(EXIT_STATUS_ERROR);
-    };
-    zs
-}
-
-fn setup_segments(segment_file_paths: Vec<PathBuf>) -> Vec<File> {
-    let mut files = Vec::new();
-    for segment in segment_file_paths {
-        let file = match File::open(segment) {
-            Ok(file) => file,
-            Err(e) => {
-                error!("Error opening file: {}", e);
-                exit(EXIT_STATUS_ERROR);
-            }
-        };
-        files.push(file);
-    }
-    files
-}
-
 fn main() {
     let args = Cli::parse();
 
@@ -769,7 +403,6 @@ fn main() {
         },
         _ => (),
     }
-        
 
     let mut hash_types = Vec::new();
     for htype in &args.hash_algorithm {
@@ -783,35 +416,22 @@ fn main() {
     }
     debug!("Following hash algorithms will be used: {:?}", hash_types);
 
-    let encryption_header = encryption_header(&args);
+    let chunk_size = chunk_size(&args);
+
+    let password = ask_password(&args);
+
+    let encryption_header = match password {
+        Some(ref password) => header_creation::encryption_header(&args, password),
+        None => None
+    };
+
     let mut optional_parameter = setup_optional_parameter(&args);
 
-    let flags = ObjectFlags {
-        encryption: encryption_header.is_some(),
-        sign_hash: optional_parameter.signature_key.is_some(),
-    };
-
-    let chunk_size = match hrs_parser(&args.chunk_size) {
-        Some(val) => val,
-        None => {
-            error!("Cannot parse {}, please enter a valid size (e.g. 32K, 40k, 10M, ...)", args.chunk_size);
-            exit(EXIT_STATUS_ERROR);
-        }
-    };
-    debug!("Set chunk_size at {}", chunk_size.bytes_as_hrb());
-
-    let mut obj_header = ObjectHeader::new(
-        INITIAL_OBJECT_NUMBER,
-        encryption_header,
-        chunk_size,
-        compression_header(&args),
-        object_description_header(&args),
-        ObjectType::Physical,
-        flags,
-        );
+    let mut obj_header = header_creation::create_object_header(&args, encryption_header);
 
     let mut logical_objects: HashMap<ObjectHeader, Box<dyn LogicalObjectSource>> = HashMap::new();
     let mut physical_objects = HashMap::new();
+    let mut virtual_objects = HashMap::new();
 
     let mut progressbar_value;
 
@@ -979,22 +599,109 @@ fn main() {
             ZffFilesOutput::ExtendContainer(append_files.to_vec())
         },
         Commands::Convert { inputfile, outputfile } => {
+            // the original file will be stored as a physical object and 
+            // a virtual object will map the appropriate
+            obj_header.description_header.custom_identifier_value("zffacquire::tar_archive::virtual_mapped_object", 
+            inputfile.file_name().unwrap().to_string_lossy());
+            let mut optional_parameter = setup_optional_parameter(&args);
             setup_deduplication_map(&args, &mut optional_parameter, None);
-            obj_header.object_type = ObjectType::Logical;
-            info!("Initializing tar file. This could take a few minutes, depending on the tar file size.");
-            let logical_object_source = match LogicalObjectSourceTar::try_from(inputfile) {
-                Ok(source) => source,
+            let fd = match File::open(inputfile) {
+                Ok(fd) => fd,
                 Err(e) => {
-                    error!("Failed to initialize logical object for tar file: {e}");
+                    error!("Unable to open inputfile {}: {e}", inputfile.to_string_lossy());
+                    exit(EXIT_STATUS_ERROR)
+                }
+            };
+            let inputfile = match phollpers::compression::decompress(fd) {
+                Ok(reader) => reader,
+                Err(e) => {
+                    error!("Unable to read inputfile: {e}");
+                    exit(EXIT_STATUS_ERROR)
+                }
+            };
+            //TODO: Check if this is a valid tar archive.
+            progressbar_value = ProgressBarValue::NumberOfFiles(1);//TODO!
+
+            let mut outputfile = PathBuf::from(outputfile);
+            outputfile.set_extension(FIRST_FILE_EXTENSION);
+
+            info!("Reading tar source file. This could take a few minutes ...");
+            let mut converter_objects = HashMap::new();
+            converter_objects.insert(obj_header, inputfile);
+
+            let zff_files_output = ZffFilesOutput::NewContainer(outputfile);
+
+            let mut zs = match ZffWriter::with_data(
+                converter_objects,
+                HashMap::new(),
+                HashMap::new(),
+                hash_types.clone(),
+                optional_parameter,
+                zff_files_output,
+                ) {
+                Ok(zw) => zw,
+                Err(e) => {
+                    error!("An error occured while trying to create the ZffWriter object:\n{e}");
                     exit(EXIT_STATUS_ERROR);
                 }
             };
-            progressbar_value = ProgressBarValue::NumberOfFiles(logical_object_source.remaining_elements() as u64);
-            logical_objects.insert(obj_header, Box::new(logical_object_source));
-            let mut outputfile = PathBuf::from(outputfile);
-            outputfile.set_extension(FIRST_FILE_EXTENSION);
-            ZffFilesOutput::NewContainer(outputfile)
+
+            let segment_filepaths = match zs.generate_files() {
+                Ok(filenames) => filenames,
+                Err(e) => {
+                    error!("An error occured while filling the zff container:\n {e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
+
+            let reader_vec = open_files(&segment_filepaths);
+
+            let mut zffreader = match ZffReader::with_reader(reader_vec) {
+                Ok(reader) => reader,
+                Err(e) => {
+                    error!("An error occurred while trying to create the ZffReader: {e}");
+                    exit(EXIT_STATUS_ERROR);
+                }
+            };
+            match zffreader.initialize_object(INITIAL_OBJECT_NUMBER) {
+                Ok(_) => debug!("Successfully initialized passive object {INITIAL_OBJECT_NUMBER}"),
+                Err(e) => {
+                    error!("Could not inititalize object {INITIAL_OBJECT_NUMBER} due following error: {e}");
+                    exit(EXIT_STATUS_ERROR);
+                },
+            }
+            if let Some(ref password) = password {
+                match zffreader.decrypt_object(INITIAL_OBJECT_NUMBER, password) {
+                    Ok(o_type) => debug!("Passive object {INITIAL_OBJECT_NUMBER} ({o_type} object) decrypted successfully"),
+                    Err(e) => {
+                        error!("Could not decrypt passive object {INITIAL_OBJECT_NUMBER}: {e}");
+                        exit(EXIT_STATUS_ERROR)
+                    },
+                }
+            }
+
+            let virtual_encryption_header = match password {
+                Some(ref password) => header_creation::encryption_header(&args, password),
+                None => None
+            };
+
+
+            let vos_tar = match VirtualObjectSourceLogicalTar::new(zffreader, INITIAL_OBJECT_NUMBER, None, hash_types.clone()) {
+                Ok(vos_tar) => header_creation::create_vos(vos_tar),
+                Err(e) => {
+                    error!("An error occured while trying to create the virtual object writer: {e}");
+                    exit(EXIT_STATUS_ERROR)
+                }
+            };
+            let mut obj_header = create_object_header(&args, virtual_encryption_header);
+            obj_header.flags.passive_object = false;
+            obj_header.object_type = ObjectType::Virtual;
+
+            virtual_objects.insert(obj_header, vos_tar);
+
+            ZffFilesOutput::ExtendContainer(segment_filepaths)
         }
+
     };
     
     // if the progress bar should be shown, we have to use the ZffStreamer instead of the ZffWriter.
@@ -1002,6 +709,7 @@ fn main() {
         let mut zs = match ZffWriter::with_data(
             physical_objects,
             logical_objects,
+            virtual_objects,
             hash_types,
             optional_parameter,
             zff_files_output) {
@@ -1131,6 +839,7 @@ fn main() {
         let mut zs = match ZffWriter::with_data(
             physical_objects,
             logical_objects,
+            virtual_objects,
             hash_types,
             optional_parameter,
             zff_files_output,
@@ -1150,4 +859,150 @@ fn main() {
 
     info!("Zff file(s) successfully created");
     exit(EXIT_STATUS_SUCCESS);
+}
+
+
+
+fn signer(args: &Cli) -> Option<SigningKey> {
+    if !args.sign_data {
+        info!("Signing of data has been disabled.");
+        return None;
+    }
+
+    let sign_key = match &args.sign_key {
+        None => Signature::new_signing_key(),
+        Some(value) => match Signature::new_signingkey_from_base64(value.trim()) {
+            Ok(keypair) => keypair,
+            Err(_) => {
+                error!("{}", ERROR_PARSE_KEY);
+                exit(EXIT_STATUS_ERROR);
+            }
+        }
+    };
+    if args.sign_key.is_some() {
+        debug!("Using private sign key {}", base64engine.encode(sign_key.to_bytes()));
+    } else {
+        info!("Private signature key is {}", base64engine.encode(sign_key.to_bytes()));
+    }
+    info!("Public signature key is {}", base64engine.encode(sign_key.verifying_key()));
+    Some(sign_key)
+}
+
+fn setup_optional_parameter<R: Read + Seek>(args: &Cli) -> ZffCreationParameters<R> {
+    let mut rng = rand::rng();
+
+    let description_notes = &args.description_notes;
+    let sign_keypair = signer(args);
+    let target_segment_size = if let Some(segment_size) = &args.segment_size {
+        match hrs_parser(segment_size) {
+            Some(val) => Some(val),
+            None => {
+                error!("{}{}", ERROR_UNPARSABLE_SEGMENT_SIZE_VALUE, segment_size);
+                exit(EXIT_STATUS_ERROR);
+            }
+        }
+    } else {
+        None
+    };
+
+    let chunkmap_size = match hrs_parser(&args.chunkmap_size) {
+        Some(val) => Some(val),
+        None => {
+            error!("{}{}", ERROR_UNPARSABLE_CHUNKMAP_SIZE_VALUE, &args.chunkmap_size);
+            exit(EXIT_STATUS_ERROR);
+        }
+    };
+
+    let unique_identifier = rng.random();
+
+    ZffCreationParameters {
+        signature_key: sign_keypair,
+        target_segment_size,
+        chunkmap_size,
+        deduplication_metadata: None,
+        unique_identifier,
+        description_notes: description_notes.clone(),
+    }
+}
+
+fn setup_deduplication_map(
+    args: &Cli,
+    optional_parameter: &mut ZffCreationParameters<File>,
+    segment_file_paths: Option<Vec<PathBuf>>) {
+    let mut deduplication_map = if args.in_memory_chunk_deduplication {
+        DeduplicationChunkMap::new_in_memory_map()
+    } else if let Some(path) = &args.on_disk_chunk_deduplication {
+        match DeduplicationChunkMap::new_from_path(path) {
+            Ok(map) => map,
+            Err(e) => {
+                error!("cannot create deduplication chunkmap: {e}");
+                exit(EXIT_STATUS_ERROR);
+            }
+        }
+    } else {
+        return;
+    };
+    let deduplication_metadata = if let Some(segment_file_paths) = segment_file_paths {
+        let segment_files = setup_segments(segment_file_paths);
+        let zs = setup_zffreader(segment_files);
+        match zs.get_xxhashmaps_unencrypted() {
+            Ok(map) => {
+                for (chunk_no, xxhash) in map {
+                if let Err(e) = deduplication_map.append_entry(xxhash, chunk_no) {
+                    error!("An error occured while trying to append an entry to the deduplication map: {e}");
+                    exit(1);
+                    }
+                }
+            },
+            Err(e) => {
+                error!("An error occured while trying to append an entry to the deduplication map: {e}");
+                exit(1);
+            },
+        };
+
+        Some(DeduplicationMetadata {
+            deduplication_map,
+            original_zffreader: Some(zs),
+        })
+    } else {
+        Some(DeduplicationMetadata {
+            deduplication_map,
+            original_zffreader: None,
+        })
+    };
+    optional_parameter.deduplication_metadata = deduplication_metadata;
+}
+
+fn setup_zffreader<R: Read + Seek>(segment_files: Vec<R>) -> ZffReader<R> {
+    let mut zs = match ZffReader::with_reader(segment_files) {
+        Ok(zs) => zs,
+        Err(e) => {
+            error!("Error initializing ZffReader: {}", e);
+            exit(EXIT_STATUS_ERROR);
+        }
+    };
+    if let Err(e) = zs.initialize_objects_all() { //TODO: initialize only the unencrypted objects
+        error!("Error initializing objects: {}", e);
+        exit(EXIT_STATUS_ERROR);
+    };
+    zs
+}
+
+fn setup_segments(segment_file_paths: Vec<PathBuf>) -> Vec<File> {
+    let mut files = Vec::new();
+    for segment in segment_file_paths {
+        let file = match File::open(segment) {
+            Ok(file) => file,
+            Err(e) => {
+                error!("Error opening file: {}", e);
+                exit(EXIT_STATUS_ERROR);
+            }
+        };
+        files.push(file);
+    }
+    files
+}
+
+fn object_is_passive(args: &Cli) -> bool {
+    matches!(args.command, Commands::Convert { inputfile: _, outputfile: _ })
 }

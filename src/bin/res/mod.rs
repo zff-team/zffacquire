@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 // - Parent
 use super::*;
 
@@ -5,6 +7,7 @@ use super::*;
 pub mod constants;
 pub mod traits;
 pub mod list_devices;
+pub mod header_creation;
 #[cfg(target_os = "linux")]
 pub mod memory_reader;
 
@@ -213,6 +216,26 @@ pub(crate) fn get_size_of_inputfile(input_file: PathBuf) -> Result<u64> {
     }
 }
 
+pub fn open_files<P, V>(input_paths: V) -> Vec<File>
+where 
+    V: Borrow<Vec<P>>,
+    P: AsRef<Path>,
+{
+    let mut inputfiles = Vec::new();
+    debug!("Opening {} segment files to create virtual tar mapping object.", input_paths.borrow().len());
+    for path in input_paths.borrow() {
+        let file = match File::open(path.as_ref()) {
+            Ok(file) => file,
+            Err(e) => {
+                error!("{e}");
+                exit(EXIT_STATUS_ERROR);
+            },
+        };
+        inputfiles.push(file);
+    }
+    inputfiles
+}
+
 #[cfg(target_family = "windows")]
 pub(crate) fn get_size_of_inputfile(input_file: PathBuf) -> Result<u64> {
     unimplemented!()
@@ -223,4 +246,14 @@ pub(crate) fn get_size_of_inputfile(input_file: PathBuf) -> Result<u64> {
     let input_file = concat_prefix_path(INPUTFILES_PATH_PREFIX, input_file);
     let metadata = std::fs::metadata(input_file)?;
     return Ok(metadata.len());
+}
+
+pub fn chunk_size(args: &Cli) -> u64 {
+    match hrs_parser(&args.chunk_size) {
+        Some(val) => val,
+        None => {
+            error!("Cannot parse {}, please enter a valid size (e.g. 32K, 40k, 10M, ...)", args.chunk_size);
+            exit(EXIT_STATUS_ERROR);
+        }
+    }
 }
