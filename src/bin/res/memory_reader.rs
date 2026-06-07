@@ -142,7 +142,7 @@ fn get_next_buffer_value(
             let queue_elements = calc_queue_elements(dump_size);
             let mut unreadable_offsets = None;
             for i in 0..queue_elements {
-                let queue_element_size = if i == queue_elements && dump_size % BUFFER_SIZE != 0 {
+                let queue_element_size = if i == queue_elements && !dump_size.is_multiple_of(BUFFER_SIZE) {
                     dump_size % BUFFER_SIZE
                 } else {
                     BUFFER_SIZE
