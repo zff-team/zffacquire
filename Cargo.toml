@@ -1,9 +1,9 @@
 [package]
 name = "zffacquire"
 authors = ["ph0llux <ph0llux@pm.me>"]
-version = "2.0.0-rc.3"
+version = "2.0.0-rc.4"
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.89.0"
 license = "MIT OR Apache-2.0"
 description = "A command line utility for acquiring data into the forensic format Zff."
 readme = "README.md"
@@ -24,6 +24,7 @@ base64 = "0.22"
 clap = { version = "4.6.1", features = [ "derive" ] }
 ed25519-dalek = { version = "2.0.0", features = [ "rand_core", "digest" ] }
 env_logger = "0.11.10"
+ewf = "0.2"
 indicatif = "0.18.4"
 indicatif-log-bridge = "0.2.3"
 log = "0.4.29"

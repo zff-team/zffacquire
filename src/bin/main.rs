@@ -34,6 +34,7 @@ use zff::header::DeduplicationMetadata;
 use zff::io::zffreader::ZffReader;
 use zff::io::zffwriter::SegmentationState;
 use zff::{
+    ReadAt,
     VirtualObjectSourceLogicalTar,
     EncryptionAlgorithm,
     CompressionAlgorithm,
@@ -72,6 +73,7 @@ use clap::{
     Subcommand,
     ValueEnum,
 };
+use ewf::{self, EwfReader};
 use indicatif::{ProgressBar, MultiProgress, ProgressStyle, ProgressDrawTarget};
 use indicatif_log_bridge::LogWrapper;
 use rand::RngExt;
@@ -276,16 +278,12 @@ enum Commands {
 
     /// Converts the given file to a zff container.
     /// The original file will *not* be deleted, but the appropriate content will be stored in a zff container.
-    /// Currently supported file formats which can be converted: .tar, .tar.gz, tar.bz2, .tar.xz, .tar.zst, .tar.lz4.
+    /// Currently supported file formats which can be converted: 
+    /// .tar, .tar.gz, tar.bz2, .tar.xz, .tar.zst, .tar.lz4,
     #[clap(arg_required_else_help=true)]
     Convert {
-        /// The input file. This field is REQUIRED.
-        #[clap(short='i', long="inputfile", required=true)]
-        inputfile: PathBuf,
-
-        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
-        #[clap(short='o', long="outputfile", global=true, required=false)]
-        outputfile: String,
+        #[clap(subcommand)]
+        convert_command: ConvertSubcommands,
     },
 
     #[cfg(target_family = "windows")]
@@ -293,6 +291,34 @@ enum Commands {
     /// which can be used as input for the physical subcommand.
     #[clap()]
     ListDevices { },
+}
+
+#[derive(Subcommand)]
+enum ConvertSubcommands {
+    /// Currently supported file formats which can be converted: 
+    /// .tar, .tar.gz, tar.bz2, .tar.xz, .tar.zst, .tar.lz4.
+    #[clap(arg_required_else_help=true)]
+    Tar {
+        /// The input file. This field is REQUIRED.
+        #[clap(short='i', long="inputfile", required=true)]
+        inputfile: PathBuf,
+
+        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/sda_dump".
+        /// File extension will be added automatically. This field is REQUIRED.
+        #[clap(short='o', long="outputfile", global=true, required=false)]
+        outputfile: String,
+    },
+    #[clap(arg_required_else_help=true)]
+    Ewf {
+        /// The segments of the appropriate EWF/E01 container. You have to provide all necessary segments.
+        #[clap(short='i', long="input-segment-files", required=true)]
+        input_segments: Vec<PathBuf>,
+
+        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/e01_converted_image".
+        /// File extension will be added automatically. This field is REQUIRED.
+        #[clap(short='o', long="outputfile", global=true, required=false)]
+        outputfile: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -598,115 +624,138 @@ fn main() {
 
             ZffFilesOutput::ExtendContainer(append_files.to_vec())
         },
-        Commands::Convert { inputfile, outputfile } => {
-            // the original file will be stored as a physical object and 
-            // a virtual object will map the appropriate
-            obj_header.description_header.custom_identifier_value("zffacquire::tar_archive::virtual_mapped_object", 
-            inputfile.file_name().unwrap().to_string_lossy());
+        Commands::Convert { convert_command } => {
             let mut optional_parameter = setup_optional_parameter(&args);
             setup_deduplication_map(&args, &mut optional_parameter, None);
-            let fd = match File::open(inputfile) {
-                Ok(fd) => fd,
-                Err(e) => {
-                    error!("Unable to open inputfile {}: {e}", inputfile.to_string_lossy());
-                    exit(EXIT_STATUS_ERROR)
-                }
-            };
-            let inputfile = match phollpers::compression::decompress(fd) {
-                Ok(reader) => reader,
-                Err(e) => {
-                    error!("Unable to read inputfile: {e}");
-                    exit(EXIT_STATUS_ERROR)
-                }
-            };
-            //TODO: Check if this is a valid tar archive.
-            progressbar_value = ProgressBarValue::NumberOfFiles(1);//TODO!
+            match convert_command {
+                ConvertSubcommands::Ewf { input_segments, outputfile } => {
+                    obj_header.description_header.custom_identifier_value("zffacquire::ewf_image", 
+                    format!("{:?}", input_segments.iter().map(|path| path.file_name().unwrap().to_string_lossy())));
+                    //input_segments.sort(); //TODO: Sort. Order is necessary.
+                    let ewf_reader = match EwfReader::open_segments(&input_segments) {
+                        Ok(reader) => reader,
+                        Err(e) => {
+                            error!("An error occured while trying to open ewf segment(s): {e}");
+                            exit(EXIT_STATUS_ERROR)
+                        }
+                    };
+                    progressbar_value = ProgressBarValue::TotalSize(1); //TODO
 
-            let mut outputfile = PathBuf::from(outputfile);
-            outputfile.set_extension(FIRST_FILE_EXTENSION);
+                    physical_objects.insert(obj_header, Box::new(ewf_reader));
 
-            info!("Reading tar source file. This could take a few minutes ...");
-            let mut converter_objects = HashMap::new();
-            converter_objects.insert(obj_header, inputfile);
-
-            let zff_files_output = ZffFilesOutput::NewContainer(outputfile);
-
-            let mut zs = match ZffWriter::with_data(
-                converter_objects,
-                HashMap::new(),
-                HashMap::new(),
-                hash_types.clone(),
-                optional_parameter,
-                zff_files_output,
-                ) {
-                Ok(zw) => zw,
-                Err(e) => {
-                    error!("An error occured while trying to create the ZffWriter object:\n{e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            };
-
-            let segment_filepaths = match zs.generate_files() {
-                Ok(filenames) => filenames,
-                Err(e) => {
-                    error!("An error occured while filling the zff container:\n {e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            };
-
-            let reader_vec = open_files(&segment_filepaths);
-
-            let mut zffreader = match ZffReader::with_reader(reader_vec) {
-                Ok(reader) => reader,
-                Err(e) => {
-                    error!("An error occurred while trying to create the ZffReader: {e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            };
-            match zffreader.initialize_object(INITIAL_OBJECT_NUMBER) {
-                Ok(_) => debug!("Successfully initialized passive object {INITIAL_OBJECT_NUMBER}"),
-                Err(e) => {
-                    error!("Could not inititalize object {INITIAL_OBJECT_NUMBER} due following error: {e}");
-                    exit(EXIT_STATUS_ERROR);
+                    let mut outputfile = PathBuf::from(outputfile);
+                    outputfile.set_extension(FIRST_FILE_EXTENSION);
+                    ZffFilesOutput::NewContainer(outputfile)
                 },
-            }
-            if let Some(ref password) = password {
-                match zffreader.decrypt_object(INITIAL_OBJECT_NUMBER, password) {
-                    Ok(o_type) => debug!("Passive object {INITIAL_OBJECT_NUMBER} ({o_type} object) decrypted successfully"),
-                    Err(e) => {
-                        error!("Could not decrypt passive object {INITIAL_OBJECT_NUMBER}: {e}");
-                        exit(EXIT_STATUS_ERROR)
-                    },
+                ConvertSubcommands::Tar { inputfile, outputfile } => {
+                    obj_header.description_header.custom_identifier_value("zffacquire::tar_archive::virtual_mapped_object", 
+                    inputfile.file_name().unwrap().to_string_lossy());
+                    // the original file will be stored as a physical object and 
+                    // a virtual object will map the appropriate
+                    let fd = match File::open(inputfile) {
+                        Ok(fd) => fd,
+                        Err(e) => {
+                            error!("Unable to open inputfile {}: {e}", inputfile.to_string_lossy());
+                            exit(EXIT_STATUS_ERROR)
+                        }
+                    };
+
+                    let inputfile = match phollpers::compression::decompress(fd) {
+                        Ok(reader) => reader,
+                        Err(e) => {
+                            error!("Unable to read inputfile: {e}");
+                            exit(EXIT_STATUS_ERROR)
+                        }
+                    };
+                    //TODO: Check if this is a valid tar archive.
+                    progressbar_value = ProgressBarValue::NumberOfFiles(1);//TODO!
+
+                    let mut outputfile = PathBuf::from(outputfile);
+                    outputfile.set_extension(FIRST_FILE_EXTENSION);
+
+                    info!("Reading tar source file. This could take a few minutes ...");
+                    let mut converter_objects = HashMap::new();
+                    converter_objects.insert(obj_header, inputfile);
+
+                    let zff_files_output = ZffFilesOutput::NewContainer(outputfile);
+
+                    let mut zs = match ZffWriter::new(
+                        converter_objects,
+                        HashMap::new(),
+                        HashMap::new(),
+                        hash_types.clone(),
+                        optional_parameter,
+                        zff_files_output,
+                        ) {
+                        Ok(zw) => zw,
+                        Err(e) => {
+                            error!("An error occured while trying to create the ZffWriter object:\n{e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    };
+
+                    let segment_filepaths = match zs.generate_files() {
+                        Ok(filenames) => filenames,
+                        Err(e) => {
+                            error!("An error occured while filling the zff container:\n {e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    };
+
+                    let reader_vec = open_files(&segment_filepaths);
+
+                    let mut zffreader = match ZffReader::with_reader(reader_vec) {
+                        Ok(reader) => reader,
+                        Err(e) => {
+                            error!("An error occurred while trying to create the ZffReader: {e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    };
+                    match zffreader.initialize_object(INITIAL_OBJECT_NUMBER) {
+                        Ok(_) => debug!("Successfully initialized passive object {INITIAL_OBJECT_NUMBER}"),
+                        Err(e) => {
+                            error!("Could not inititalize object {INITIAL_OBJECT_NUMBER} due following error: {e}");
+                            exit(EXIT_STATUS_ERROR);
+                        },
+                    }
+                    if let Some(ref password) = password {
+                        match zffreader.decrypt_object(INITIAL_OBJECT_NUMBER, password) {
+                            Ok(o_type) => debug!("Passive object {INITIAL_OBJECT_NUMBER} ({o_type} object) decrypted successfully"),
+                            Err(e) => {
+                                error!("Could not decrypt passive object {INITIAL_OBJECT_NUMBER}: {e}");
+                                exit(EXIT_STATUS_ERROR)
+                            },
+                        }
+                    }
+
+                    let virtual_encryption_header = match password {
+                        Some(ref password) => header_creation::encryption_header(&args, password),
+                        None => None
+                    };
+
+
+                    let vos_tar = match VirtualObjectSourceLogicalTar::new(zffreader, INITIAL_OBJECT_NUMBER, None, hash_types.clone()) {
+                        Ok(vos_tar) => header_creation::create_vos(vos_tar),
+                        Err(e) => {
+                            error!("An error occured while trying to create the virtual object writer: {e}");
+                            exit(EXIT_STATUS_ERROR)
+                        }
+                    };
+                    let mut obj_header = create_object_header(&args, virtual_encryption_header);
+                    obj_header.flags.passive_object = false;
+                    obj_header.object_type = ObjectType::Virtual;
+
+                    virtual_objects.insert(obj_header, vos_tar);
+
+                    ZffFilesOutput::ExtendContainer(segment_filepaths)
                 }
             }
-
-            let virtual_encryption_header = match password {
-                Some(ref password) => header_creation::encryption_header(&args, password),
-                None => None
-            };
-
-
-            let vos_tar = match VirtualObjectSourceLogicalTar::new(zffreader, INITIAL_OBJECT_NUMBER, None, hash_types.clone()) {
-                Ok(vos_tar) => header_creation::create_vos(vos_tar),
-                Err(e) => {
-                    error!("An error occured while trying to create the virtual object writer: {e}");
-                    exit(EXIT_STATUS_ERROR)
-                }
-            };
-            let mut obj_header = create_object_header(&args, virtual_encryption_header);
-            obj_header.flags.passive_object = false;
-            obj_header.object_type = ObjectType::Virtual;
-
-            virtual_objects.insert(obj_header, vos_tar);
-
-            ZffFilesOutput::ExtendContainer(segment_filepaths)
         }
-
     };
     
     // if the progress bar should be shown, we have to use the ZffStreamer instead of the ZffWriter.
     if args.progress_bar {
-        let mut zs = match ZffWriter::with_data(
+        let mut zs = match ZffWriter::new(
             physical_objects,
             logical_objects,
             virtual_objects,
@@ -836,7 +885,7 @@ fn main() {
         pb.finish();
 
     } else {
-        let mut zs = match ZffWriter::with_data(
+        let mut zs = match ZffWriter::new(
             physical_objects,
             logical_objects,
             virtual_objects,
@@ -888,7 +937,7 @@ fn signer(args: &Cli) -> Option<SigningKey> {
     Some(sign_key)
 }
 
-fn setup_optional_parameter<R: Read + Seek>(args: &Cli) -> ZffCreationParameters<R> {
+fn setup_optional_parameter<R: ReadAt>(args: &Cli) -> ZffCreationParameters<R> {
     let mut rng = rand::rng();
 
     let description_notes = &args.description_notes;
@@ -973,7 +1022,7 @@ fn setup_deduplication_map(
     optional_parameter.deduplication_metadata = deduplication_metadata;
 }
 
-fn setup_zffreader<R: Read + Seek>(segment_files: Vec<R>) -> ZffReader<R> {
+fn setup_zffreader<R: ReadAt>(segment_files: Vec<R>) -> ZffReader<R> {
     let mut zs = match ZffReader::with_reader(segment_files) {
         Ok(zs) => zs,
         Err(e) => {
@@ -1004,5 +1053,5 @@ fn setup_segments(segment_file_paths: Vec<PathBuf>) -> Vec<File> {
 }
 
 fn object_is_passive(args: &Cli) -> bool {
-    matches!(args.command, Commands::Convert { inputfile: _, outputfile: _ })
+    matches!(args.command, Commands::Convert { convert_command: ConvertSubcommands::Tar { inputfile: _, outputfile: _ } })
 }
