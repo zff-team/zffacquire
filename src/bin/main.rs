@@ -23,6 +23,8 @@ use crate::res::{
 use crate::res::{
     memory_reader::{MemoryReaderType, memory_size},
     get_memory_reader,
+    setup_output_writer,
+    setup_output_writer_from_path,
 };
 
 #[cfg(target_family = "windows")]
@@ -165,12 +167,12 @@ struct Cli {
     in_memory_chunk_deduplication: bool,
 
     /// Sets the key derivation function for the password. Default is [scrypt-aes256].
-    #[clap(short='K', long="password-kdf", global=true, required=false, value_enum, default_value="scrypt-aes256", requires="encrypt")]
+    #[clap(short='K', long="password-kdf", global=true, required=false, value_enum, default_value="argon2id-aes256", requires="encrypt")]
     password_kdf: PasswordKdfValues,
 
     //TODO: Depends on "encrypt"...this has to be configured through clap.
     /// Sets the encryption algorithm. Default is [chacha20poly1305].
-    #[clap(short='E', long="encryption-algorithm", global=true, required=false, value_enum, default_value="chacha20poly1305", requires="encrypt")]
+    #[clap(short='E', long="encryption-algorithm", global=true, required=false, value_enum, default_value="aes256gcm", requires="encrypt")]
     encryption_algorithm: EncryptionAlgorithmValues,
 
     /// This option adds an additional hash algorithm to calculate. You can use this option multiple times. If no algorithm is selected, zffacquire automatically calculates [blake3] hash values.
@@ -218,7 +220,7 @@ struct Cli {
     uncompress_input: bool,
 
     /// Shows a progress bar.
-    /// The progress bar will be written to stdout.
+    /// The progress bar will be written to stderr.
     #[clap(short='P', long="progress-bar", global=true, required=false, default_value="false")]
     progress_bar: bool,
 
@@ -231,7 +233,7 @@ enum Commands {
     /// Acquire a physical image
     #[clap(arg_required_else_help=true)]
     Physical {
-        /// The input file. This should be your device to dump. This field is REQUIRED.
+        /// The input file. This should be your device to dump.
         /// You can use all devices which are available by using the "zffacquire list-devices" command.
         /// E.g. "/dev/sda" or "/dev/nvme0n1" in Linux systems.
         /// On windows systems, you have to use the device names which are listed by the "zffacquire list-devices" command,
@@ -239,29 +241,34 @@ enum Commands {
         #[clap(short='i', long="inputfile", required=true)]
         inputfile: PathBuf,
 
-        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
+        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/sda_dump".
+        /// File extension will be added automatically.
+        /// If not set, --segment-size will be ignored and the output will be streamed to stdout.
         #[clap(short='o', long="outputfile", global=true, required=false)]
-        outputfile: String,
-
+        outputfile: Option<String>,
     },
     /// Acquire logical folder
     #[clap(arg_required_else_help=true)]
     Logical {
-        /// The input folders. You can use this option multiple times. This field is REQUIRED.
+        /// The input folders. You can use this option multiple times.
         #[clap(short='i', long="inputfiles", required=true)]
         inputfiles: Vec<PathBuf>,
 
-        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
+        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/sda_dump".
+        /// File extension will be added automatically.
+        /// If not set, --segment-size will be ignored and the output will be streamed to stdout.
         #[clap(short='o', long="outputfile", global=true, required=false)]
-        outputfile: String,
+        outputfile: Option<String>,
     },
 
     #[cfg(target_os = "linux")]
     /// Acquire the physical memory (root some specific capabilities are necessary).
     Memory {
-        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/sda_dump". File extension will be added automatically. This field is REQUIRED.
+        /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/sda_dump". 
+        /// File extension will be added automatically. 
+        /// If not set, --segment-size will be ignored and the output will be streamed to stdout.
         #[clap(short='o', long="outputfile", global=true, required=false)]
-        outputfile: String,
+        outputfile: Option<String>,
     },
 
     /// Extend an existing zff file
@@ -316,8 +323,9 @@ enum ConvertSubcommands {
 
         /// The the name/path of the output-file (without file-extension). E.g. "/home/ph0llux/e01_converted_image".
         /// File extension will be added automatically. This field is REQUIRED.
+        /// If not set, --segment-size will be ignored and the output will be streamed to stdout.
         #[clap(short='o', long="outputfile", global=true, required=false)]
-        outputfile: String,
+        outputfile: Option<String>,
     },
 }
 
@@ -399,7 +407,7 @@ fn main() {
     let args = Cli::parse();
 
     // setup the progress bar (only neccessary for the progress bar option is set)
-    let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stdout());
+    let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
 
     let log_level = match args.log_level {
         LogLevel::Error => LevelFilter::Error,
@@ -461,8 +469,6 @@ fn main() {
 
     let mut progressbar_value;
 
-    let mut extend = false;
-
     let zff_files_output = match &args.command {
         #[cfg(target_family = "windows")]
         Commands::ListDevices {  } => {
@@ -491,9 +497,14 @@ fn main() {
 
             physical_objects.insert(obj_header, file);
 
-            let mut outputfile = PathBuf::from(outputfile);
-            outputfile.set_extension(FIRST_FILE_EXTENSION);
-            ZffFilesOutput::NewContainer(outputfile)
+            if let Some(outputfile) = outputfile {
+                let mut outputfile = PathBuf::from(outputfile);
+                outputfile.set_extension(FIRST_FILE_EXTENSION);
+                ZffFilesOutput::NewContainer(outputfile)
+            } else {
+                optional_parameter.target_segment_size = None;
+                ZffFilesOutput::Stream
+            }
 
         },
         Commands::Logical { inputfiles, outputfile } => {
@@ -511,9 +522,14 @@ fn main() {
             };
             logical_objects.insert(obj_header, Box::new(logical_object_source));
             
-            let mut outputfile = PathBuf::from(outputfile);
-            outputfile.set_extension(FIRST_FILE_EXTENSION);
-            ZffFilesOutput::NewContainer(outputfile)
+            if let Some(outputfile) = outputfile {
+                let mut outputfile = PathBuf::from(outputfile);
+                outputfile.set_extension(FIRST_FILE_EXTENSION);
+                ZffFilesOutput::NewContainer(outputfile)
+            } else {
+                optional_parameter.target_segment_size = None;
+                ZffFilesOutput::Stream
+            }
         },
         #[cfg(target_os = "linux")]
         Commands::Memory { outputfile } => {
@@ -546,9 +562,14 @@ fn main() {
             };
             physical_objects.insert(obj_header, memory_reader);
 
-            let mut outputfile = PathBuf::from(outputfile);
-            outputfile.set_extension(FIRST_FILE_EXTENSION);
-            ZffFilesOutput::NewContainer(outputfile)
+            if let Some(outputfile) = outputfile {
+                let mut outputfile = PathBuf::from(outputfile);
+                outputfile.set_extension(FIRST_FILE_EXTENSION);
+                ZffFilesOutput::NewContainer(outputfile)
+            } else {
+                optional_parameter.target_segment_size = None;
+                ZffFilesOutput::Stream
+            }
         },
         Commands::Extend { extend_command, append_files } => {
             setup_deduplication_map(&args, &mut optional_parameter, Some(append_files.to_vec()));
@@ -620,7 +641,6 @@ fn main() {
                     physical_objects.insert(obj_header, memory_reader);
                 },
             };
-            extend = true;
 
             ZffFilesOutput::ExtendContainer(append_files.to_vec())
         },
@@ -632,7 +652,7 @@ fn main() {
                     obj_header.description_header.custom_identifier_value("zffacquire::ewf_image", 
                     format!("{:?}", input_segments.iter().map(|path| path.file_name().unwrap().to_string_lossy())));
                     //input_segments.sort(); //TODO: Sort. Order is necessary.
-                    let ewf_reader = match EwfReader::open_segments(&input_segments) {
+                    let ewf_reader = match EwfReader::open_segments(input_segments) {
                         Ok(reader) => reader,
                         Err(e) => {
                             error!("An error occured while trying to open ewf segment(s): {e}");
@@ -643,9 +663,14 @@ fn main() {
 
                     physical_objects.insert(obj_header, Box::new(ewf_reader));
 
-                    let mut outputfile = PathBuf::from(outputfile);
-                    outputfile.set_extension(FIRST_FILE_EXTENSION);
-                    ZffFilesOutput::NewContainer(outputfile)
+                    if let Some(outputfile) = outputfile {
+                        let mut outputfile = PathBuf::from(outputfile);
+                        outputfile.set_extension(FIRST_FILE_EXTENSION);
+                        ZffFilesOutput::NewContainer(outputfile)
+                    } else {
+                        optional_parameter.target_segment_size = None;
+                        ZffFilesOutput::Stream
+                    }
                 },
                 ConvertSubcommands::Tar { inputfile, outputfile } => {
                     obj_header.description_header.custom_identifier_value("zffacquire::tar_archive::virtual_mapped_object", 
@@ -752,61 +777,21 @@ fn main() {
             }
         }
     };
-    
-    // if the progress bar should be shown, we have to use the ZffStreamer instead of the ZffWriter.
-    if args.progress_bar {
-        let mut zs = match ZffWriter::new(
-            physical_objects,
-            logical_objects,
-            virtual_objects,
-            hash_types,
-            optional_parameter,
-            zff_files_output) {
-            Ok(zs) => zs,
-            Err(e) => {
-                error!("An error occured while trying to create the ZffStreamer object:\n{e}");
-                exit(EXIT_STATUS_ERROR);
-            }
-        };
 
-        let mut outputfile_path = match zs.output_path() {
-            Some(path) => path,
-            None => {
-                error!("Stream to stdout is not yet implemented"); //TODO!
-                exit(EXIT_STATUS_ERROR);
-            }
-        };
-
-        let mut current_extension = outputfile_path.extension().unwrap().to_str().unwrap().to_string(); //unwrap()'s should never break while the extension was already set in an earlier state;
-
-        let mut outputfile = if extend {
-            // Prepare the appropriate file to write to.
-            let mut file = match OpenOptions::new().append(true).read(true).open(&outputfile_path) {
-                Ok(file) => file,
-                Err(e) => {
-                    error!("An error occured while trying to open the output file:\n{e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            };
-            match file.seek(SeekFrom::End(0)) {
-                Ok(_) => (),
-                Err(e) => {
-                    error!("An error occured while trying to seek to the end of the output file:\n{e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            };
-            file
-        } else {
-            match File::create(&outputfile_path) {
-                Ok(file) => file,
-                Err(e) => {
-                    error!("An error occured while trying to create the output file:\n{e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            }
-        };  
-        
-
+    let mut zs = match ZffWriter::new(
+        physical_objects,
+        logical_objects,
+        virtual_objects,
+        hash_types,
+        optional_parameter,
+        zff_files_output.clone()) {
+        Ok(zs) => zs,
+        Err(e) => {
+            error!("An error occured while trying to create the ZffStreamer object:\n{e}");
+            exit(EXIT_STATUS_ERROR);
+        }
+    };
+    let pb = if args.progress_bar {
         let pb = match progressbar_value {
             ProgressBarValue::TotalSize(total_size) => {
                 info!("Total size to dump: {}", total_size.bytes_as_hrb());
@@ -827,83 +812,74 @@ fn main() {
                 pb
             },
         };
+        Some(pb)
+    } else {
+        None
+    };
+    // reads the next data with zs.read() (ZffWriter implements the Read trait) and writes the data to a buffer.
+    // The buffer will be written to the output file.
+    let mut buffer = vec![0u8; chunk_size as usize];
+    let mut output_writer = setup_output_writer(&zff_files_output);
+    
+    // only used if output file is given ;)
+    let mut outputfile_path = zs.output_path().unwrap_or_default();
+    let mut current_extension = zs
+    .output_path()
+    .unwrap_or_default()
+    .extension()
+    .unwrap_or_default()
+    .to_str()
+    .unwrap_or_default()
+    .to_string();
 
-        // reads the next data with zs.read() (ZffStreamer implements the Read trait) and writes the data to a buffer.
-        // The buffer will be written to the output file.
-        let mut buffer = vec![0u8; chunk_size as usize];
-        loop {
-            // Set the position of the progress bar, depending on the appropriate type
+    loop {
+        // Set the position of the progress bar, depending on the appropriate type
+        if let Some(ref pb) = pb {
             match progressbar_value {
                 ProgressBarValue::TotalSize(_) => pb.set_position(zs.current_chunk_number()*chunk_size),
                 ProgressBarValue::NumberOfFiles(total_files) => pb.set_position(total_files-zs.files_left_total()),
             }
-            
-            // When using the Read, you have to handle the segmentation manually by switching to the next output file.
-            match zs.read(&mut buffer) {
-                Ok(0) => {
-                    match zs.next_segment() {
-                        SegmentationState::SegmentFinished => {
-                            current_extension = match file_extension_next_value(current_extension) {
-                                Ok(val) => val,
-                                Err(e) => {
-                                    error!("An error occured while trying to set next segment file extension:\n{e}");
-                                    exit(EXIT_STATUS_ERROR);
-                                },
-                            }; 
-                            outputfile_path.set_extension(&current_extension);
-                            outputfile = match File::create(&outputfile_path) {
-                                Ok(file) => file,
-                                Err(e) => {
-                                    error!("An error occured while trying to create the output file:\n{e}");
-                                    exit(EXIT_STATUS_ERROR);
-                                }
-                            }; 
-                        },
-                        SegmentationState::LastSegmentFinished => break,
-                        SegmentationState::SegmentNotFinished => ()
-                    }
-                },
-                Ok(n) => {
-                    match outputfile.write_all(&buffer[..n]) {
-                        Ok(_) => (),
-                        Err(e) => {
-                            error!("An error occured while trying to write to the output file:\n{e}");
-                            exit(EXIT_STATUS_ERROR);
-                        }
-                    }
-                },
-                Err(e) => {
-                    error!("An error occured while trying to read from the input file:\n{e}");
-                    exit(EXIT_STATUS_ERROR);
-                }
-            }
         }
-        match progressbar_value {
-            ProgressBarValue::TotalSize(total_size) => info!("{} dumped. Finishing container...", (total_size.bytes_as_hrb())),
-            ProgressBarValue::NumberOfFiles(total_files) => info!("{} files dumped. Finishing container...", total_files-zs.files_left_total()),
-        }
-        pb.finish();
 
-    } else {
-        let mut zs = match ZffWriter::new(
-            physical_objects,
-            logical_objects,
-            virtual_objects,
-            hash_types,
-            optional_parameter,
-            zff_files_output,
-            ) {
-            Ok(zw) => zw,
+        match zs.read(&mut buffer) {
+            Ok(0) => {
+                match zs.next_segment() {
+                    SegmentationState::SegmentFinished => {
+                        current_extension = match file_extension_next_value(current_extension) {
+                            Ok(val) => val,
+                            Err(e) => {
+                                error!("An error occured while trying to set next segment file extension:\n{e}");
+                                exit(EXIT_STATUS_ERROR);
+                            },
+                        }; 
+                        outputfile_path.set_extension(&current_extension);
+                        output_writer = setup_output_writer_from_path(&outputfile_path);
+                    },
+                    SegmentationState::LastSegmentFinished => break,
+                    SegmentationState::SegmentNotFinished => ()
+                }
+            },
+            Ok(n) => {
+                match output_writer.write_all(&buffer[..n]) {
+                    Ok(_) => (),
+                    Err(e) => {
+                        error!("An error occured while trying to write to the output file:\n{e}");
+                        exit(EXIT_STATUS_ERROR);
+                    }
+                }
+            },
             Err(e) => {
-                error!("An error occured while trying to create the ZffWriter object:\n{e}");
+                error!("An error occured while trying to read from the input file:\n{e}");
                 exit(EXIT_STATUS_ERROR);
             }
-        };
-
-        if let Err(e) = zs.generate_files() {
-            error!("An error occured while filling the zff container:\n {e}");
-            exit(EXIT_STATUS_ERROR);
-        };
+        }
+    }
+    match progressbar_value {
+        ProgressBarValue::TotalSize(total_size) => info!("{} dumped. Finishing container...", (total_size.bytes_as_hrb())),
+        ProgressBarValue::NumberOfFiles(total_files) => info!("{} files dumped. Finishing container...", total_files-zs.files_left_total()),
+    }
+    if let Some(pb) = pb {
+        pb.finish();
     }
 
     info!("Zff file(s) successfully created");

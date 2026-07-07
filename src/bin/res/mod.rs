@@ -1,3 +1,4 @@
+// - STD
 use std::borrow::Borrow;
 
 // - Parent
@@ -253,6 +254,48 @@ pub fn chunk_size(args: &Cli) -> u64 {
         Some(val) => val,
         None => {
             error!("Cannot parse {}, please enter a valid size (e.g. 32K, 40k, 10M, ...)", args.chunk_size);
+            exit(EXIT_STATUS_ERROR);
+        }
+    }
+}
+
+pub fn setup_output_writer(output: &ZffFilesOutput) -> Box<dyn Write> {
+    match output {
+        ZffFilesOutput::Stream => Box::new(std::io::stdout()),
+        ZffFilesOutput::NewContainer(path) => setup_output_writer_from_path(path),
+        ZffFilesOutput::ExtendContainer(paths) => {
+            match paths.first() {
+                Some(path) => {
+                    let mut file = match OpenOptions::new().append(true).read(true).open(path) {
+                        Ok(file) => file,
+                        Err(e) => {
+                            error!("An error occured while trying to open the output file:\n{e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    };
+                    match file.seek(SeekFrom::End(0)) {
+                        Ok(_) => (),
+                        Err(e) => {
+                            error!("An error occured while trying to seek to the end of the output file:\n{e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    };
+                    Box::new(file)
+                },
+                None => {
+                     error!("An error occured while trying to create the output file: No output files found to open");
+                     exit(EXIT_STATUS_ERROR)
+                }
+            }
+        },
+    }
+}
+
+pub fn setup_output_writer_from_path<P: AsRef<Path>>(path: P) -> Box<dyn Write> {
+    match File::create(&path) {
+        Ok(file) => Box::new(file),
+        Err(e) => {
+            error!("An error occured while trying to create the output file:\n{e}");
             exit(EXIT_STATUS_ERROR);
         }
     }

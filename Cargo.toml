@@ -4,7 +4,7 @@ authors = ["ph0llux <ph0llux@pm.me>"]
 version = "2.0.0-rc.4"
 edition = "2024"
 rust-version = "1.89.0"
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0"
 description = "A command line utility for acquiring data into the forensic format Zff."
 readme = "README.md"
 homepage = "https://zff.dev"
@@ -30,11 +30,11 @@ indicatif-log-bridge = "0.2.3"
 log = "0.4.29"
 libc = { version = "0.2.186", default-features = false }
 rand = "0.10.1"
-rpassword = "7.5.2"
+rpassword = "7.5.4"
 serde = { version = "1.0", features = ["derive"] }
 toml = "1.1.2"
 phollpers ={ version = "0.1.0" , features = ["compression"]}
-zff = { path="../zff-rs", features = [ "log", "vos_tar" ] }
+zff = { path="../zff-rs", features = [ "log", "vos_tar", "posix-acl" ] }
 
 # platform specific dependencies
 [target.'cfg(target_family = "windows")'.dependencies]
