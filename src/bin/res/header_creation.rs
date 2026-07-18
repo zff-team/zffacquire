@@ -1,6 +1,7 @@
+use std::path::Path;
+
 use zff::VirtualObjectSource;
 
-// - Parent
 use super::*;
 
 pub fn compression_header(args: &Cli) -> CompressionHeader {
@@ -207,7 +208,6 @@ pub fn encryption_header<S: Into<String>>(args: &Cli, password: S) -> Option<Enc
 }
 
 pub fn object_description_header(args: &Cli) -> DescriptionHeader {
-
     let mut description_header = DescriptionHeader::new_empty();
     if let Some(value) = &args.case_number {
         description_header.set_case_number(value);
@@ -229,7 +229,58 @@ pub fn object_description_header(args: &Cli) -> DescriptionHeader {
     description_header.custom_identifier_value(TOOLNAME_KEY, TOOLNAME_VALUE);
     description_header.custom_identifier_value(TOOLVERSION_KEY, TOOLVERSION_VALUE);
 
+    // auto-detect operating system
+    let os = os_info::get_os_string();
+    debug!("Detected OS: {}", os);
+    description_header.set_operating_system(os);
+
     description_header
+}
+
+pub fn populate_physical_device_info(
+    description_header: &mut DescriptionHeader,
+    input_path: &Path,
+) {
+    // auto-fill input source path
+    if let Some(path_str) = input_path.to_str() {
+        description_header.set_input_source(path_str);
+    }
+
+    // auto-detect device info (Linux only via udev)
+    #[cfg(target_os = "linux")]
+    if let Some(info) = device_info::get_device_info(input_path) {
+        if let Some(val) = info.logical_sector_size {
+            description_header.set_logical_sector_size(val);
+        }
+        if let Some(val) = info.physical_sector_size {
+            description_header.set_physical_sector_size(val);
+        }
+        if let Some(val) = info.model {
+            description_header.set_model(val);
+        }
+        if let Some(val) = info.serial_number {
+            description_header.set_serial_number(val);
+        }
+        if let Some(val) = info.firmware {
+            description_header.set_firmware(val);
+        }
+        if let Some(val) = info.media_type {
+            description_header.set_media_type(val);
+        }
+    }
+}
+
+pub fn populate_logical_source_info(
+    description_header: &mut DescriptionHeader,
+    input_paths: &[std::path::PathBuf],
+) {
+    let sources: Vec<String> = input_paths
+        .iter()
+        .filter_map(|p| p.to_str().map(|s| s.to_string()))
+        .collect();
+    if !sources.is_empty() {
+        description_header.set_input_source(sources.join(","));
+    }
 }
 
 pub fn setup_object_flags(args: &Cli) -> ObjectFlags {

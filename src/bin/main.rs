@@ -495,7 +495,8 @@ fn main() {
                 }
             };
 
-            physical_objects.insert(obj_header, file);
+            header_creation::populate_physical_device_info(&mut obj_header.description_header, inputfile);
+                    physical_objects.insert(obj_header, file);
 
             if let Some(outputfile) = outputfile {
                 let mut outputfile = PathBuf::from(outputfile);
@@ -511,6 +512,8 @@ fn main() {
             setup_deduplication_map(&args, &mut optional_parameter, None);
             let inputfiles: Vec<PathBuf> = inputfiles.iter().map(|x| concat_prefix_path(INPUTFILES_PATH_PREFIX ,x)).collect();
             obj_header.object_type = ObjectType::Logical;
+
+            header_creation::populate_logical_source_info(&mut obj_header.description_header, &inputfiles);
             
             progressbar_value = ProgressBarValue::NumberOfFiles(inputfiles.len() as u64);
             let logical_object_source = match LogicalObjectSourceFilesystem::try_from(inputfiles) {
@@ -578,6 +581,8 @@ fn main() {
                 ExtendSubcommands::Logical { inputfiles } => {
                     let inputfiles: Vec<PathBuf> = inputfiles.iter().map(|x| concat_prefix_path(INPUTFILES_PATH_PREFIX ,x)).collect();
                     obj_header.object_type = ObjectType::Logical;
+
+                    header_creation::populate_logical_source_info(&mut obj_header.description_header, &inputfiles);
                     progressbar_value = ProgressBarValue::NumberOfFiles(inputfiles.len() as u64);
                     let logical_object_source = match LogicalObjectSourceFilesystem::try_from(inputfiles) {
                         Ok(source) => source,
@@ -607,6 +612,7 @@ fn main() {
                             exit(EXIT_STATUS_ERROR);
                         }
                     };
+                    header_creation::populate_physical_device_info(&mut obj_header.description_header, inputfile);
                     physical_objects.insert(obj_header, file);
                 },
                 #[cfg(target_os = "linux")]
@@ -933,7 +939,7 @@ fn setup_optional_parameter<R: ReadAt>(args: &Cli) -> ZffCreationParameters<R> {
     let chunkmap_size = match hrs_parser(&args.chunkmap_size) {
         Some(val) => Some(val),
         None => {
-            error!("{}{}", ERROR_UNPARSABLE_CHUNKMAP_SIZE_VALUE, &args.chunkmap_size);
+            error!("{}{}", ERROR_UNPARSABLE_CHUNKMAP_SIZE_VALUE, args.chunkmap_size);
             exit(EXIT_STATUS_ERROR);
         }
     };

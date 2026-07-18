@@ -9,6 +9,9 @@ pub mod constants;
 pub mod traits;
 pub mod list_devices;
 pub mod header_creation;
+pub mod os_info;
+#[cfg(target_os = "linux")]
+pub mod device_info;
 #[cfg(target_os = "linux")]
 pub mod memory_reader;
 
