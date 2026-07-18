@@ -21,18 +21,18 @@ bench = true
 
 [dependencies]
 base64 = "0.22"
-clap = { version = "4.6.1", features = [ "derive" ] }
-ed25519-dalek = { version = "2.0.0", features = [ "rand_core", "digest" ] }
-env_logger = "0.11.10"
-ewf = "0.2"
-indicatif = "0.18.4"
+clap = { version = "4.6.2", features = [ "derive" ] }
+ed25519-dalek = { version = "3.0.0", features = [ "rand_core", "digest" ] }
+env_logger = "0.11.11"
+ewf = "0.4.3"
+indicatif = "0.18.6"
 indicatif-log-bridge = "0.2.3"
 log = "0.4.29"
 libc = { version = "0.2.186", default-features = false }
-rand = "0.10.1"
+rand = "0.10.2"
 rpassword = "7.5.4"
 serde = { version = "1.0", features = ["derive"] }
-toml = "1.1.2"
+toml = "1.1.3"
 phollpers ={ version = "0.1.0" , features = ["compression"]}
 zff = { path="../zff-rs", features = [ "log", "vos_tar", "posix-acl" ] }
 
@@ -43,7 +43,7 @@ windows-drives = "0.5.0"
 winapi = { version = "0.3.9", features = ["handleapi", "fileapi", "winerror", "minwindef", "ioapiset", "winioctl", "winbase", "winnt"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aya = { version = "0.13.1", default-features = false }
+aya = { version = "0.13.0", default-features = false }
 udev = "0.9.3"
 emd-ebpf = { version = "1.0.7"}
 emd-common = { version = "0.5.0", features = ["std"]}
