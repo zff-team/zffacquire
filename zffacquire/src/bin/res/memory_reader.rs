@@ -1,7 +1,21 @@
-// - Parents
-use super::*;
+use std::io::{Read, Cursor};
+use std::ops::Range;
+use std::process::exit;
 
-//TODO: implement an alternative way here (e.g. by using AVML?)
+use log::{debug, error};
+
+use aya::{
+    programs::UProbe,
+    Ebpf,
+    maps::{MapData, Queue},
+};
+use procfs::process::{Process, MMPermissions};
+use emd_common::*;
+
+use zffacquire_common::constants::EXIT_STATUS_ERROR;
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
 pub(crate) enum MemoryReaderType {
     Emd
 }
@@ -23,8 +37,6 @@ pub struct Emd {
 
 impl Emd {
     pub fn new() -> Result<Self> {
-        // This will include your eBPF object file as raw bytes at compile-time and load it at
-        // runtime.
         debug!("Load eBPF program.");
         let mut ebpf = Ebpf::load(emd_ebpf::EBPF_BINARY)?;
         debug!("Initialize read_kernel_memory function.");
@@ -44,7 +56,6 @@ impl Emd {
         let system_ram_ranges = extract_mem_range(SEPARATOR_SYSTEM_RAM)?;
         let mut inner_range_position = InnerRangePosition::default();
 
-        // fills the internal buffer initially.
         let internal_buffer = get_next_buffer_value(
             &mut buffer_queue,
             &system_ram_ranges,
@@ -77,7 +88,6 @@ impl Emd {
 }
 
 impl Read for Emd {
-    // Reads the kernel memory
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let mut total_read = 0;
 
@@ -89,12 +99,10 @@ impl Read for Emd {
                 total_read += read_size;
             }
 
-            // re-fill buffer
             if self.remaining_buffer == 0 {
                 self.fill_buffer();
                 self.remaining_buffer = self.internal_buffer.get_ref().len();
 
-                // check if the end of the memory ranges was reached
                 if self.remaining_buffer == 0 {
                     return Ok(total_read);
                 }
@@ -107,7 +115,7 @@ impl Read for Emd {
 
 fn get_next_buffer_value(
     buffer_queue: &mut Queue<&mut MapData, [u8; BUFFER_SIZE]>,
-    system_ram_range: &[Range<u64>], 
+    system_ram_range: &[Range<u64>],
     inner_range_position: &mut InnerRangePosition,
     mapping_offset: u64,
     ) -> Vec<u8> {
@@ -120,7 +128,6 @@ fn get_next_buffer_value(
                 None => return buffer,
             };
 
-            // Compute available bytes in current range
             let position_offset = range.start + inner_range_position.offset;
             let available = (range.end - position_offset) as usize;
             let dump_size = available.min(remaining);
@@ -130,11 +137,11 @@ fn get_next_buffer_value(
                 inner_range_position.offset = 0;
                 continue;
             }
-            
-            let lime_header = LimeHeader { 
-                start_address: position_offset, 
-                end_address: position_offset + dump_size as u64, 
-                ..Default::default() 
+
+            let lime_header = LimeHeader {
+                start_address: position_offset,
+                end_address: position_offset + dump_size as u64,
+                ..Default::default()
             };
             buffer.extend(lime_header.as_bytes());
 
@@ -160,16 +167,14 @@ fn get_next_buffer_value(
             }
 
             if let Some((offset, i)) = unreadable_offsets {
-                // only necessary to print in warning.
                 let start_offset = offset + (BUFFER_SIZE * i) as u64;
                 let end_offset = offset + (BUFFER_SIZE * (queue_elements-1)) as u64;
                 debug!("Could not read 0x{start_offset:x} - 0x{end_offset:x}. Writing zeros for appropriate zone.");
             }
-            
+
             inner_range_position.offset += dump_size as u64;
             remaining -= dump_size;
 
-            // Move to the next range if we have consumed the current one
             if inner_range_position.offset + range.start >= range.end {
                 inner_range_position.current_range += 1;
                 inner_range_position.offset = 0;
@@ -187,7 +192,6 @@ pub extern "C" fn _read_kernel_memory(_src_address: u64, _dump_size: usize) {}
 #[inline(never)]
 fn read_kernel_memory(offset: u64, dump_size: usize) {
     let func: extern "C" fn(u64, usize) = _read_kernel_memory;
-    // unsafe block is necessary to ensure the compiler will not optimize this away.
     unsafe {
         std::ptr::read_volatile(&func);
         func(offset, dump_size);
@@ -215,13 +219,13 @@ fn get_base_addr() -> Result<usize> {
     let maps = me.maps()?;
 
     for entry in maps {
-        if entry.perms.contains(MMPermissions::EXECUTE) && 
-        entry.perms.contains(MMPermissions::READ) && 
+        if entry.perms.contains(MMPermissions::EXECUTE) &&
+        entry.perms.contains(MMPermissions::READ) &&
         entry.perms.contains(MMPermissions::PRIVATE) {
             return Ok((entry.address.0 - entry.offset) as usize);
         }
     }
-    
+
     error!("Failed to find executable region");
     exit(EXIT_STATUS_ERROR);
 }

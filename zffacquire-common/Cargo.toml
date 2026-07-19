@@ -1,0 +1,19 @@
+[package]
+name = "zffacquire-common"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89.0"
+license = "GPL-3.0"
+description = "Common types and utilities for zffacquire tools"
+
+[dependencies]
+crossbeam-channel = "0.5"
+log = "0.4"
+zff = { workspace = true }
+base64 = "0.22"
+rand = "0.10"
+ed25519-dalek = { version = "3.0.0", features = ["rand_core", "digest"] }
+phollpers = { version = "0.1.0", features = ["compression"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+udev = "0.9.3"
