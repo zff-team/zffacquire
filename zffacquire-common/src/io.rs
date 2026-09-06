@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use log::{debug, error};
 
+#[cfg(target_family = "unix")]
 use crate::constants::*;
 use phollpers::compression::decompress;
 
@@ -41,6 +42,49 @@ fn open_physical_drive(input_file: PathBuf) -> std::io::Result<File> {
     File::open(input_file)
 }
 
+#[cfg(target_family = "windows")]
+trait ReadSeek: Read + std::io::Seek {}
+
+#[cfg(target_family = "windows")]
+impl<T: Read + std::io::Seek> ReadSeek for T {}
+
+#[cfg(target_family = "windows")]
+fn open_physical_drive(input_file: PathBuf) -> std::io::Result<Box<dyn ReadSeek>> {
+    use windows_drives::drive::{BufferedHarddiskVolume, BufferedPhysicalDrive};
+
+    match windows_device(&input_file)? {
+        Some((true, number)) => BufferedPhysicalDrive::open(number)
+            .map(|drive| Box::new(drive) as Box<dyn ReadSeek>)
+            .map_err(std::io::Error::other),
+        Some((false, number)) => BufferedHarddiskVolume::open(number)
+            .map(|volume| Box::new(volume) as Box<dyn ReadSeek>)
+            .map_err(std::io::Error::other),
+        None => Ok(Box::new(File::open(input_file)?)),
+    }
+}
+
+// Recognize device names without mistaking ordinary image filenames for devices.
+#[cfg(any(target_family = "windows", test))]
+fn windows_device(path: &Path) -> std::io::Result<Option<(bool, u8)>> {
+    let path = path.to_string_lossy().to_ascii_lowercase();
+    let name = path.strip_prefix(r"\\.\")
+        .or_else(|| path.strip_prefix(r"\\?\"))
+        .unwrap_or(&path);
+    let (physical, number) = if let Some(number) = name.strip_prefix("physicaldrive") {
+        (true, number)
+    } else if let Some(number) = name.strip_prefix("harddiskvolume") {
+        (false, number)
+    } else {
+        return Ok(None);
+    };
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid drive number"));
+    }
+    let number = number.parse::<u8>()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    Ok(Some((physical, number)))
+}
+
 pub fn get_physical_input_file(input_file: PathBuf, try_uncompress: bool) -> Result<Box<dyn Read>, String> {
     let file = open_physical_drive(input_file).map_err(|e| e.to_string())?;
     if try_uncompress {
@@ -73,8 +117,15 @@ pub fn get_size_of_inputfile(input_file: PathBuf) -> Result<u64, String> {
 }
 
 #[cfg(target_family = "windows")]
-pub fn get_size_of_inputfile(_input_file: PathBuf) -> Result<u64, String> {
-    Err("Windows get_size_of_inputfile not yet implemented in common".to_string())
+pub fn get_size_of_inputfile(input_file: PathBuf) -> Result<u64, String> {
+    use windows_drives::drive::{HarddiskVolume, PhysicalDrive};
+
+    match windows_device(&input_file).map_err(|e| e.to_string())? {
+        Some((true, number)) => PhysicalDrive::open(number).map(|drive| drive.size()),
+        Some((false, number)) => HarddiskVolume::open(number).map(|volume| volume.size()),
+        None => std::fs::metadata(input_file).map(|metadata| metadata.len())
+            .map_err(|e| e.to_string()),
+    }
 }
 
 #[cfg(all(target_family = "unix", not(target_os = "linux")))]
@@ -100,4 +151,36 @@ where
         };
     }
     inputfiles
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_device_paths() {
+        for (path, expected) in [
+            (r"\\.\PhysicalDrive0", (true, 0)),
+            (r"\\?\PHYSICALDRIVE12", (true, 12)),
+            ("PhysicalDrive255", (true, 255)),
+            (r"\\?\HarddiskVolume1", (false, 1)),
+        ] {
+            assert_eq!(windows_device(Path::new(path)).unwrap(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn windows_image_paths_are_not_devices() {
+        for path in [r"C:\images\PhysicalDrive0.raw", r"\\server\images\disk.raw", "disk.raw"] {
+            assert_eq!(windows_device(Path::new(path)).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn invalid_windows_device_numbers_are_rejected() {
+        for path in [r"\\.\PhysicalDrive", r"\\.\PhysicalDrive256", r"\\.\PhysicalDrive+1", r"\\?\HarddiskVolume1x"] {
+            assert_eq!(windows_device(Path::new(path)).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+        }
+    }
 }

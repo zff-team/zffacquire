@@ -73,7 +73,6 @@ pub fn get_os_string() -> String {
             let ver = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !ver.is_empty() { return format!("{} {}", os, ver); }
         }
-        return format!("{} {}", os, std::env::consts::ARCH);
     }
     format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)
 }

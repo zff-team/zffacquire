@@ -1,5 +1,32 @@
-// Parent use
-use super::*;
+use std::{io, ptr, process::exit};
+use log::error;
+use zffacquire_common::{HumanReadable, constants::*};
+use super::super::Result;
+
+use comfy_table::{
+    Table, Attribute, Cell, ContentArrangement,
+    modifiers::UTF8_ROUND_CORNERS,
+    presets::UTF8_FULL,
+};
+
+use winapi::{
+    shared::minwindef::{MAX_PATH, DWORD},
+    um::{
+        fileapi::{
+            GetVolumeInformationByHandleW,
+            FindFirstVolumeW,
+            FindNextVolumeW,
+            QueryDosDeviceW,
+            GetVolumePathNamesForVolumeNameW,
+            OPEN_EXISTING,
+            CreateFileW,
+        },
+        handleapi::{INVALID_HANDLE_VALUE, CloseHandle},
+        ioapiset::DeviceIoControl,
+        winioctl::{IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER, IOCTL_DISK_GET_DRIVE_GEOMETRY, DISK_GEOMETRY},
+        winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE, HANDLE},
+    },
+};
 
 #[cfg(target_family = "windows")]
 #[derive(Debug)]
@@ -37,7 +64,7 @@ fn get_windows_drives() -> Result<Vec<WindowsPhysicalDevice>> {
     loop {
         // Get the mounted paths for the volume.
         let mut mounted_paths = vec![0u16; MAX_PATH];
-        let _ = unsafe { GetVolumePathNamesForVolumeNameW(
+        unsafe { GetVolumePathNamesForVolumeNameW(
             volume_name.as_ptr(), 
             mounted_paths.as_mut_ptr(), 
             mounted_paths.len() as u32,
@@ -172,7 +199,7 @@ fn get_disk_size_by_handle(handle: HANDLE) -> Result<u64> {
     if result == 0 {
         return Err(Box::new(io::Error::last_os_error()));
     }
-    let size = unsafe { dg.Cylinders.QuadPart() * dg.TracksPerCylinder as i64 * dg.SectorsPerTrack as i64 * dg.BytesPerSector as i64 };
+    let size = unsafe { *dg.Cylinders.QuadPart() * dg.TracksPerCylinder as i64 * dg.SectorsPerTrack as i64 * dg.BytesPerSector as i64 };
     Ok(size as u64)
 }
 
@@ -211,13 +238,13 @@ pub(crate) fn print_devices_table() {
             subtable.add_row(vec![
                 Cell::new(&volume.device_identifier),
                 Cell::new(&volume.mounted_paths),
-                Cell::new(&format!("{:X}", volume.volume_serial_number)),
+                Cell::new(format!("{:X}", volume.volume_serial_number)),
             ]);
         }
         table.add_row(vec![
-            Cell::new(&format!("\\\\?\\PhysicalDrive{}", physical_drive.device_number)),
+            Cell::new(format!("\\\\?\\PhysicalDrive{}", physical_drive.device_number)),
             Cell::new(subtable.to_string()),
-            Cell::new(&physical_drive.size.bytes_as_hrb()),
+            Cell::new(physical_drive.size.bytes_as_hrb()),
         ]);
     }
     println!("{}", table);

@@ -7,9 +7,6 @@ use std::{
 use std::fs::File;
 use std::io::{Read, Write};
 
-#[cfg(target_family = "windows")]
-use std::{io, ptr};
-
 // - modules
 mod res;
 
@@ -28,12 +25,12 @@ use zffacquire_common::{
 use crate::res::{
     memory_reader::{MemoryReaderType, memory_size},
     get_memory_reader,
-    setup_output_writer,
-    setup_output_writer_from_path,
 };
 
 #[cfg(target_family = "windows")]
 use crate::res::list_devices::print_devices_table;
+
+use crate::res::{setup_output_writer, setup_output_writer_from_path};
 
 use zff::{LogicalObjectSource, LogicalObjectSourceFilesystem};
 use zff::header::DeduplicationMetadata;
@@ -72,36 +69,9 @@ use ewf::{self, EwfReader};
 use indicatif::{ProgressBar, MultiProgress, ProgressStyle, ProgressDrawTarget};
 use indicatif_log_bridge::LogWrapper;
 use rand::RngExt;
-use log::{LevelFilter, error, debug, info, warn};
-
-#[cfg(target_family = "windows")]
-use comfy_table::{
-    Table, Attribute, Cell, ContentArrangement,
-    modifiers::UTF8_ROUND_CORNERS,
-    presets::UTF8_FULL,
-};
-
-#[cfg(target_family = "windows")]
-use windows_drives::drive::{BufferedPhysicalDrive, BufferedHarddiskVolume};
-#[cfg(target_family = "windows")]
-use winapi::{
-    shared::minwindef::{MAX_PATH, DWORD},
-    um::{
-        fileapi::{
-            GetVolumeInformationByHandleW,
-            FindFirstVolumeW,
-            FindNextVolumeW,
-            QueryDosDeviceW,
-            GetVolumePathNamesForVolumeNameW,
-            OPEN_EXISTING,
-            CreateFileW,
-        },
-        handleapi::{INVALID_HANDLE_VALUE, CloseHandle},
-        ioapiset::DeviceIoControl,
-        winioctl::{IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER, IOCTL_DISK_GET_DRIVE_GEOMETRY, DISK_GEOMETRY},
-        winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE, HANDLE},
-    },
-};
+use log::{LevelFilter, error, debug, info};
+#[cfg(target_os = "linux")]
+use log::warn;
 
 #[derive(Parser)]
 #[clap(about, version, author, override_usage="zffacquire <SUBCOMMAND> [OPTIONS]")]
@@ -354,12 +324,9 @@ fn main() {
     info!("Using PID: {pid}");
 
     #[cfg(target_family = "windows")]
-    match args.command {
-        Commands::ListDevices {  } => {
-            print_devices_table();
-            exit(EXIT_STATUS_SUCCESS);
-        },
-        _ => (),
+    if let Commands::ListDevices {} = args.command {
+        print_devices_table();
+        exit(EXIT_STATUS_SUCCESS);
     }
 
     let hash_types = config.hash_algorithms.clone();
@@ -693,7 +660,6 @@ fn main() {
                         None => None
                     };
 
-
                     let vos_tar = match VirtualObjectSourceLogicalTar::new(zffreader, INITIAL_OBJECT_NUMBER, None, hash_types.clone()) {
                         Ok(vos_tar) => create_vos(vos_tar),
                         Err(e) => {
@@ -822,7 +788,6 @@ fn main() {
     info!("Zff file(s) successfully created");
     exit(EXIT_STATUS_SUCCESS);
 }
-
 
 fn setup_optional_parameter<R: ReadAt>(args: &Cli, config: &zffacquire_common::AcquireConfig) -> ZffCreationParameters<R> {
     let mut rng = rand::rng();
