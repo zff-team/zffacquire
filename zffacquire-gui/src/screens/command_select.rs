@@ -28,7 +28,7 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
         ("Logical Files", "File and folder acquisition", AcquireCommand::Logical, true),
         ("Memory", "Linux kernel memory dump (eBPF)", AcquireCommand::Memory, model.is_linux),
         ("Extend Container", "Extend an existing ZFF container", AcquireCommand::Extend, true),
-        ("Convert Format", "Convert between ZFF formats", AcquireCommand::Convert, true),
+        ("Convert Format", "Convert TAR or E01 to ZFF", AcquireCommand::Convert, true),
     ];
 
     let mut cards = column![].spacing(10).width(Length::Fill).max_width(520);

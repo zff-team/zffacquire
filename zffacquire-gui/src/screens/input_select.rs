@@ -1,7 +1,7 @@
 use iced::{Element, Length};
 use iced::widget::{button, column, container, row, scrollable, text};
 
-use crate::app::{AcquireCommand, Message, ZffAcquireApp};
+use crate::app::{AcquireCommand, ConvertFormat, Message, ZffAcquireApp};
 use crate::style;
 
 fn dropzone_label(label: &str) -> Element<'static, Message> {
@@ -129,9 +129,15 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
             content = content.push(input_card);
         }
         Some(AcquireCommand::Convert) => {
+            let hint_text = match model.convert_format {
+                ConvertFormat::Tar => "Supported: .tar, .tar.gz, .tar.zst, .tar.lz4",
+                ConvertFormat::Ewf => "Supported: .E01, .e01 (EWF segment files)",
+            };
+
             let input_card = {
                 let inner = column![
                     dropzone_label("Input File"),
+                    text(hint_text).size(11).style(style::dim_text),
                     container(path_display(&input_display)).padding(iced::Padding::from([10.0f32, 14.0])).width(Length::Fill).style(style::card_flat),
                     button(text("Browse Input...").size(13)).on_press(Message::PickInputFile).padding(iced::Padding::from([10.0f32, 20.0])).style(style::btn_primary),
                 ].spacing(10).width(Length::Fill);
@@ -140,6 +146,7 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
             let output_card = {
                 let inner = column![
                     dropzone_label("Output File"),
+                    text("Output will be ZFF format").size(11).style(style::dim_text),
                     container(path_display(&output_display)).padding(iced::Padding::from([10.0f32, 14.0])).width(Length::Fill).style(style::card_flat),
                     button(text("Browse Output...").size(13)).on_press(Message::PickOutputFile).padding(iced::Padding::from([10.0f32, 20.0])).style(style::btn_primary),
                 ].spacing(10).width(Length::Fill);

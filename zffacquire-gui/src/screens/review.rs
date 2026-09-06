@@ -1,7 +1,7 @@
 use iced::{Element, Length};
 use iced::widget::{button, column, container, row, scrollable, text};
 
-use crate::app::{Message, ZffAcquireApp};
+use crate::app::{AcquireCommand, Message, ZffAcquireApp};
 use crate::style;
 
 pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
@@ -22,6 +22,10 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
             crate::app::AcquireCommand::Convert => "Convert Format",
         };
         items.push(review_row("Command", label));
+
+        if matches!(cmd, AcquireCommand::Convert) {
+            items.push(review_row("Input Format", model.convert_format.label()));
+        }
     }
 
     if !model.input_files.is_empty() {
@@ -60,23 +64,27 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
     items.push(review_row("Hash", &hash_display));
     items.push(review_row("Signing", if model.sign_data { "Enabled" } else { "Disabled" }));
 
-    if let Some(case) = &model.case_number {
-        items.push(review_row("Case", case));
-    }
-    if let Some(evidence) = &model.evidence_number {
-        items.push(review_row("Evidence", evidence));
-    }
-    if let Some(examiner) = &model.examiner_name {
-        items.push(review_row("Examiner", examiner));
-    }
-    if let Some(notes) = &model.notes {
-        items.push(review_row("Notes", notes));
-    }
+    let is_convert = model.selected_command.as_ref() == Some(&AcquireCommand::Convert);
 
-    items.push(review_row("Chunk size", &model.chunk_size));
-    items.push(review_row("Chunkmap size", &model.chunkmap_size));
-    if let Some(ref seg) = model.segment_size {
-        items.push(review_row("Segment size", seg));
+    if !is_convert {
+        if let Some(case) = &model.case_number {
+            items.push(review_row("Case", case));
+        }
+        if let Some(evidence) = &model.evidence_number {
+            items.push(review_row("Evidence", evidence));
+        }
+        if let Some(examiner) = &model.examiner_name {
+            items.push(review_row("Examiner", examiner));
+        }
+        if let Some(notes) = &model.notes {
+            items.push(review_row("Notes", notes));
+        }
+
+        items.push(review_row("Chunk size", &model.chunk_size));
+        items.push(review_row("Chunkmap size", &model.chunkmap_size));
+        if let Some(ref seg) = model.segment_size {
+            items.push(review_row("Segment size", seg));
+        }
     }
 
     let can_start = model.selected_command.is_some()

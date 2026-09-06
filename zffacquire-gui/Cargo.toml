@@ -19,3 +19,5 @@ env_logger = "0.11"
 rand = "0.10"
 futures = "0.3"
 tokio = { version = "1", features = ["sync"] }
+ewf = "0.4.3"
+phollpers = { version = "0.1.1", features = ["compression"] }

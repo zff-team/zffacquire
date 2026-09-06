@@ -45,6 +45,21 @@ pub enum AcquireCommand {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum ConvertFormat {
+    Tar,
+    Ewf,
+}
+
+impl ConvertFormat {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Tar => "TAR Archive",
+            Self::Ewf => "EWF (E01)",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub enum DeduplicationMode {
     None,
@@ -102,6 +117,7 @@ pub enum Message {
     NextScreen,
     PrevScreen,
     SelectCommand(AcquireCommand),
+    ConvertFormatChanged(ConvertFormat),
     CompressionAlgoChanged(CompressionAlgorithm),
     CompressionLevelChanged(u8),
     CompressionThresholdChanged(String),
@@ -142,6 +158,7 @@ pub enum Message {
 pub struct ZffAcquireApp {
     pub current_screen: Screen,
     pub selected_command: Option<AcquireCommand>,
+    pub convert_format: ConvertFormat,
 
     pub compression_algo: CompressionAlgorithm,
     pub compression_level: u8,
@@ -189,6 +206,7 @@ impl ZffAcquireApp {
         let app = Self {
             current_screen: Screen::CommandSelect,
             selected_command: None,
+            convert_format: ConvertFormat::Tar,
             compression_algo: CompressionAlgorithm::Zstd,
             compression_level: 3,
             compression_threshold: 1.05,
@@ -278,6 +296,9 @@ impl ZffAcquireApp {
             Message::SelectCommand(cmd) => {
                 self.selected_command = Some(cmd);
                 self.current_screen = Screen::Parameters;
+            }
+            Message::ConvertFormatChanged(fmt) => {
+                self.convert_format = fmt;
             }
             Message::CompressionAlgoChanged(algo) => {
                 self.compression_algo = algo;
@@ -434,6 +455,7 @@ impl ZffAcquireApp {
 
                 let params = AcquireParams {
                     command,
+                    convert_format: self.convert_format.clone(),
                     config,
                     password,
                     input_files: self.input_files.clone(),

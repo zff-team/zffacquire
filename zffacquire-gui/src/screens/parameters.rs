@@ -3,7 +3,7 @@ use iced::widget::{button, checkbox, column, container, row, scrollable, text, t
 
 use zffacquire_common::{CompressionAlgorithm, EncryptionAlgorithm, HashType};
 
-use crate::app::{DeduplicationMode, KdfPbeOption, Message, ZffAcquireApp};
+use crate::app::{AcquireCommand, ConvertFormat, DeduplicationMode, KdfPbeOption, Message, ZffAcquireApp};
 use crate::style;
 
 fn section_card<'a>(
@@ -243,21 +243,54 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
 
     let nav_row = row![prev_button, next_button].spacing(12).width(Length::Fill);
 
-    let content = scrollable(
-        column![
-            section_card("Compression", compression_section.into()),
-            section_card("Encryption", full_encryption_section.into()),
-            section_card("Hash Algorithms", hash_section.into()),
-            section_card("Signing", signing_section.into()),
-            section_card("Sizes", sizes_section.into()),
-            section_card("Description", description_section.into()),
-            section_card("Custom Descriptions", custom_descs.into()),
-            section_card("Deduplication", dedup_section.into()),
-            nav_row,
+    let is_convert = model.selected_command.as_ref() == Some(&AcquireCommand::Convert);
+
+    let mut params_col = column![].spacing(16);
+
+    if is_convert {
+        let fmt_tar = model.convert_format == ConvertFormat::Tar;
+        let fmt_ewf = model.convert_format == ConvertFormat::Ewf;
+
+        let format_row = row![
+            button(text("TAR Archive").size(12))
+                .on_press(Message::ConvertFormatChanged(ConvertFormat::Tar))
+                .style(if fmt_tar { style::btn_pill_selected } else { style::btn_pill }),
+            button(text("EWF (E01)").size(12))
+                .on_press(Message::ConvertFormatChanged(ConvertFormat::Ewf))
+                .style(if fmt_ewf { style::btn_pill_selected } else { style::btn_pill }),
         ]
+        .spacing(8)
+        .width(Length::Fill);
+
+        let format_section = column![
+            field_label("Input Format"),
+            format_row,
+        ].spacing(8);
+
+        params_col = params_col
+            .push(section_card("Conversion Format", format_section.into()));
+    }
+
+    params_col = params_col
+        .push(section_card("Compression", compression_section.into()))
+        .push(section_card("Encryption", full_encryption_section.into()))
+        .push(section_card("Hash Algorithms", hash_section.into()))
+        .push(section_card("Signing", signing_section.into()));
+
+    if !is_convert {
+        params_col = params_col
+            .push(section_card("Sizes", sizes_section.into()))
+            .push(section_card("Description", description_section.into()))
+            .push(section_card("Custom Descriptions", custom_descs.into()))
+            .push(section_card("Deduplication", dedup_section.into()));
+    }
+
+    params_col = params_col.push(nav_row);
+
+    let content = scrollable(params_col
         .spacing(16)
         .padding(iced::Padding { top: 8.0, right: 40.0, bottom: 24.0, left: 40.0 })
-        .width(Length::Fill),
+        .width(Length::Fill)
     );
 
     container(content)
