@@ -1,16 +1,23 @@
 [package]
 name = "zffacquire-gui"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.89.0"
-license = "GPL-3.0"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "A graphical utility for acquiring data into the forensic format Zff."
+# Published separately, if at all: it carries a GUI toolchain the command line
+# tool does not need.
+publish = false
 
 [[bin]]
 name = "zffacquire-gui"
 path = "src/main.rs"
 
 [dependencies]
-zffacquire-common = { path = "../zffacquire-common" }
+zffacquire-common = { workspace = true }
 zff = { workspace = true }
 iced = { version = "0.14", features = ["tokio"] }
 rfd = "0.15"

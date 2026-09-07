@@ -16,6 +16,9 @@ use zffacquire_common::constants::EXIT_STATUS_ERROR;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// The eBPF map the kernel-side program pushes memory pages into.
+const BUFFER_QUEUE_MAP: &str = "BUFFER_QUEUE";
+
 pub(crate) enum MemoryReaderType {
     Emd
 }
@@ -40,7 +43,9 @@ impl Emd {
         debug!("Load eBPF program.");
         let mut ebpf = Ebpf::load(emd_ebpf::EBPF_BINARY)?;
         debug!("Initialize read_kernel_memory function.");
-        let program: &mut UProbe = ebpf.program_mut(READ_KERNEL_MEM).unwrap().try_into()?;
+        let program: &mut UProbe = ebpf.program_mut(READ_KERNEL_MEM)
+            .ok_or_else(|| format!("The eBPF object does not contain the program {READ_KERNEL_MEM}"))?
+            .try_into()?;
         program.load()?;
 
         let fn_addr = read_kernel_memory as *const () as usize;
@@ -50,7 +55,8 @@ impl Emd {
         program.attach(None, offset, PROC_SELF_EXE, None)?;
 
         debug!("Initializing buffer queue.");
-        let mut buffer_queue = Queue::try_from(ebpf.map_mut("BUFFER_QUEUE").unwrap())?;
+        let mut buffer_queue = Queue::try_from(ebpf.map_mut(BUFFER_QUEUE_MAP)
+            .ok_or_else(|| format!("The eBPF object does not contain the map {BUFFER_QUEUE_MAP}"))?)?;
 
         let page_offset_base = get_page_offset_base(&mut buffer_queue)?;
         let system_ram_ranges = extract_mem_range(SEPARATOR_SYSTEM_RAM)?;
@@ -75,8 +81,15 @@ impl Emd {
         })
     }
 
-    fn fill_buffer(&mut self) {
-        let mut buffer_queue = Queue::try_from(self.ebpf.map_mut("BUFFER_QUEUE").unwrap()).unwrap();
+    /// Refills the internal buffer from the eBPF queue.
+    ///
+    /// Reported rather than panicked: this runs in the middle of a memory dump,
+    /// where unwinding would abandon a container that can still be finalised.
+    fn fill_buffer(&mut self) -> std::io::Result<()> {
+        let map = self.ebpf.map_mut(BUFFER_QUEUE_MAP).ok_or_else(|| {
+            std::io::Error::other(format!("The eBPF map {BUFFER_QUEUE_MAP} is no longer available"))
+        })?;
+        let mut buffer_queue = Queue::try_from(map).map_err(std::io::Error::other)?;
         let internal_buffer = get_next_buffer_value(
             &mut buffer_queue,
             &self.system_ram_ranges,
@@ -84,6 +97,7 @@ impl Emd {
             self.page_offset_base
         );
         self.internal_buffer = Cursor::new(internal_buffer);
+        Ok(())
     }
 }
 
@@ -100,7 +114,7 @@ impl Read for Emd {
             }
 
             if self.remaining_buffer == 0 {
-                self.fill_buffer();
+                self.fill_buffer()?;
                 self.remaining_buffer = self.internal_buffer.get_ref().len();
 
                 if self.remaining_buffer == 0 {

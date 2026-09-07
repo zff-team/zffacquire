@@ -2,8 +2,18 @@
 members = ["zffacquire-common", "zffacquire", "zffacquire-gui"]
 resolver = "3"
 
+[workspace.package]
+version = "2.0.0"
+authors = ["ph0llux <ph0llux@pm.me>"]
+edition = "2024"
+rust-version = "1.89.0"
+license = "GPL-3.0"
+homepage = "https://zff.dev"
+repository = "https://github.com/zff-team/zffacquire"
+
 [workspace.dependencies]
-zff = { path = "../zff-rs", features = ["log", "vos_tar", "posix-acl"] }
+zff = { version = "3.0.0", features = ["log", "vos_tar", "posix-acl"] }
+zffacquire-common = { path = "zffacquire-common", version = "2.0.0" }
 
 [profile.release]
 lto = true

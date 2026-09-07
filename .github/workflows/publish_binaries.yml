@@ -13,117 +13,104 @@ jobs:
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
     strategy:
+      fail-fast: false
+      # One job per artifact, so a target that fails to build cannot silently
+      # take another target's binary with it into the release.
       matrix:
-        os: [ubuntu-22.04, windows-latest, macos-latest]
         include:
           - os: ubuntu-22.04
-            libacl: libacl1-dev
-            pkg_config: pkg-config
-            libudev: libudev-dev
-            aarch64-compiler: gcc-aarch64-linux-gnu
-            toolchain: stable
             target: x86_64-unknown-linux-gnu
-            aarch64-target: aarch64-unknown-linux-gnu
-            name: Linux (Ubuntu 22.04)
+            name: Linux x86_64
             fid: x86_64-linux
-            aarch64-fid: aarch64-linux
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            name: Linux aarch64
+            fid: aarch64-linux
           - os: windows-latest
-            libacl: ""
-            toolchain: nightly
             target: x86_64-pc-windows-msvc
             name: Windows x86_64 (MSVC)
             fid: x86_64-windows.exe
           - os: macos-latest
-            libacl: ""
-            toolchain: stable
             target: aarch64-apple-darwin
             name: macOS (arm64)
             fid: aarch64-macos
-    
+
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
 
     - name: Set up Rust
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: ${{ matrix.toolchain }}
-        target: ${{ matrix.target }}
-        components: clippy
-        default: true
-    
-    - name: Install deps (Linux only)
-      if: matrix.os == 'ubuntu-22.04'
-      run: sudo apt-get install -y ${{ matrix.libacl }} ${{ matrix.aarch64-compiler }} ${{ matrix.pkg_config }} ${{ matrix.libudev }}
-    
+        targets: ${{ matrix.target }}
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.target }}
+
+    - name: Install deps (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libacl1-dev libudev-dev
+
+    # Cross-compiling to aarch64 needs the cross linker, and the -sys crates
+    # need their libraries for that architecture rather than the host's.
+    - name: Install cross toolchain (Linux aarch64)
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: |
+        sudo dpkg --add-architecture arm64
+        sudo sed -i 's|^deb http|deb [arch=amd64] http|g' /etc/apt/sources.list
+        sudo tee /etc/apt/sources.list.d/arm64.list >/dev/null <<'EOF'
+        deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe
+        deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe
+        EOF
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu libacl1-dev:arm64 libudev-dev:arm64
+
+    # Only the command line tool is released. zffacquire-gui carries a GUI
+    # toolchain that has no place in a headless acquisition environment.
     - name: Build ${{ matrix.target }}
-      run: cargo build --release --target ${{ matrix.target }}
+      env:
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        PKG_CONFIG_ALLOW_CROSS: 1
+      run: cargo build --release -p ${{ env.PROJECT_NAME }} --target ${{ matrix.target }}
 
-    - name: Build ${{ matrix.aarch64-target }}
-      if: matrix.os == 'ubuntu-22.04'
-      run: cargo build --release --target ${{ matrix.aarch64-target }}
-    
-    - name: Create release directory
-      run: mkdir -p release
+    - name: Stage executable (unix)
+      if: runner.os != 'Windows'
+      run: |
+        mkdir -p release
+        mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }} \
+           release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
 
-    - name: Move executable (Linux)
-      if: matrix.os == 'ubuntu-22.04'
-      run: mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }} release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
-    
-    - name: Move executable (Linux aarch64)
-      if: matrix.os == 'ubuntu-22.04'
-      run: mv target/${{ matrix.aarch64-target }}/release/${{ env.PROJECT_NAME }} release/${{ env.PROJECT_NAME }}-${{ matrix.aarch64-fid }}
-    
-    - name: Move executable (Windows)
-      if: matrix.os == 'windows-latest'
-      run: mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}.exe release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
-    
-    - name: Move executable (macOS)
-      if: matrix.os == 'macos-latest'
-      run: mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }} release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
-    
-    - name: Upload Release Asset
-      uses: actions/upload-artifact@v2
+    - name: Stage executable (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        mkdir release
+        mv target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}.exe `
+           release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ env.PROJECT_NAME }}-${{ matrix.fid }}
-        path: release
-    
-    - name: Upload Linux aarch64 Release Asset
-      uses: actions/upload-artifact@v2
-      if: matrix.os == 'ubuntu-22.04'
-      with:
-        name: ${{ env.PROJECT_NAME }}-${{ matrix.aarch64-fid }}
-        path: release
-    
+        path: release/${{ env.PROJECT_NAME }}-${{ matrix.fid }}
+        if-no-files-found: error
+
   release:
     needs: build
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
     - name: Download binaries
       uses: actions/download-artifact@v4
       with:
-        name: ${{ env.PROJECT_NAME }}-x86_64-linux
         path: ./release
-    - name: Download Linux aarch64 binaries
-      uses: actions/download-artifact@v4
+        merge-multiple: true
+
+    - name: Attach binaries to the release
+      uses: softprops/action-gh-release@v2
       with:
-        name: ${{ env.PROJECT_NAME }}-aarch64-linux
-    - name: Download Windows binaries
-      uses: actions/download-artifact@v4
-      with:
-        name: ${{ env.PROJECT_NAME }}-x86_64-windows.exe
-        path: ./release
-    - name: Download macOS binaries
-      uses: actions/download-artifact@v4
-      with:
-        name: ${{ env.PROJECT_NAME }}-aarch64-macos
-        path: ./release
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          release/${{ env.PROJECT_NAME }}-x86_64-linux
-          release/${{ env.PROJECT_NAME }}-aarch64-linux
-          release/${{ env.PROJECT_NAME }}-x86_64-windows.exe
-          release/${{ env.PROJECT_NAME }}-aarch64-macos
+        files: release/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

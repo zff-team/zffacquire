@@ -1,13 +1,18 @@
 [package]
 name = "zffacquire-common"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.89.0"
-license = "GPL-3.0"
-description = "Common types and utilities for zffacquire tools"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Common types and utilities for the zffacquire tools."
+keywords = ["forensics", "security", "acquisition", "file-format", "file"]
+categories = ["filesystem"]
+publish = true
 
 [dependencies]
-crossbeam-channel = "0.5"
 log = "0.4"
 zff = { workspace = true }
 base64 = "0.22"

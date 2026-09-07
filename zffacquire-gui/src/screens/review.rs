@@ -17,8 +17,6 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
         let label = match cmd {
             crate::app::AcquireCommand::Physical => "Physical Disk",
             crate::app::AcquireCommand::Logical => "Logical Files",
-            crate::app::AcquireCommand::Memory => "Memory",
-            crate::app::AcquireCommand::Extend => "Extend Container",
             crate::app::AcquireCommand::Convert => "Convert Format",
         };
         items.push(review_row("Command", label));

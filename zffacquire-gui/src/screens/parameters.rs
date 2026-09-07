@@ -219,18 +219,36 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
         .style(style::btn_ghost);
     custom_descs = custom_descs.push(add_custom_button);
 
-    let dedup_in_memory = matches!(model.deduplication, DeduplicationMode::InMemory);
-    let dedup_none = matches!(model.deduplication, DeduplicationMode::None);
-
-    let dedup_section = column![
-        field_label("Deduplication"),
+    let uncompress_on = model.uncompress_input;
+    let input_section = column![
+        field_label("Decompress input"),
         row![
-            button(text("None").size(12)).on_press(Message::DeduplicationChanged(DeduplicationMode::None)).style(if dedup_none { style::btn_pill_selected } else { style::btn_pill }),
-            button(text("In-Memory").size(12)).on_press(Message::DeduplicationChanged(DeduplicationMode::InMemory)).style(if dedup_in_memory { style::btn_pill_selected } else { style::btn_pill }),
+            button(text("Off").size(12)).on_press(Message::UncompressInputChanged(false)).style(if !uncompress_on { style::btn_pill_selected } else { style::btn_pill }),
+            button(text("On").size(12)).on_press(Message::UncompressInputChanged(true)).style(if uncompress_on { style::btn_pill_selected } else { style::btn_pill }),
         ]
         .spacing(8),
     ]
     .spacing(8);
+
+    let dedup_in_memory = matches!(model.deduplication, DeduplicationMode::InMemory);
+    let dedup_none = matches!(model.deduplication, DeduplicationMode::None);
+    let dedup_on_disk = matches!(model.deduplication, DeduplicationMode::OnDisk(_));
+
+    let mut dedup_section = column![
+        field_label("Deduplication"),
+        row![
+            button(text("None").size(12)).on_press(Message::DeduplicationChanged(DeduplicationMode::None)).style(if dedup_none { style::btn_pill_selected } else { style::btn_pill }),
+            button(text("In-Memory").size(12)).on_press(Message::DeduplicationChanged(DeduplicationMode::InMemory)).style(if dedup_in_memory { style::btn_pill_selected } else { style::btn_pill }),
+            button(text("On-Disk...").size(12)).on_press(Message::PickDeduplicationFile).style(if dedup_on_disk { style::btn_pill_selected } else { style::btn_pill }),
+        ]
+        .spacing(8),
+    ]
+    .spacing(8);
+
+    if let DeduplicationMode::OnDisk(path) = &model.deduplication {
+        dedup_section = dedup_section.push(
+            text(path.display().to_string()).size(11).style(style::dim_text));
+    }
 
     let prev_button = button(text("Back").size(14))
         .on_press(Message::PrevScreen)
@@ -276,6 +294,10 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
         .push(section_card("Encryption", full_encryption_section.into()))
         .push(section_card("Hash Algorithms", hash_section.into()))
         .push(section_card("Signing", signing_section.into()));
+
+    if model.selected_command.as_ref() == Some(&AcquireCommand::Physical) {
+        params_col = params_col.push(section_card("Input", input_section.into()));
+    }
 
     if !is_convert {
         params_col = params_col

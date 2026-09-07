@@ -98,36 +98,6 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
 
             content = content.push(input_card).push(output_card);
         }
-        Some(AcquireCommand::Memory) => {
-            let info_card = container(
-                column![
-                    text("Memory Acquisition").size(14).style(style::accent_text),
-                    text("eBPF-based kernel memory dump (Linux only)").size(12).style(style::dim_text),
-                ].spacing(8),
-            ).padding(20).width(Length::Fill).style(style::section_card);
-
-            let output_card = {
-                let inner = column![
-                    dropzone_label("Output File"),
-                    container(path_display(&output_display)).padding(iced::Padding::from([10.0f32, 14.0])).width(Length::Fill).style(style::card_flat),
-                    button(text("Browse Output...").size(13)).on_press(Message::PickOutputFile).padding(iced::Padding::from([10.0f32, 20.0])).style(style::btn_primary),
-                ].spacing(10).width(Length::Fill);
-                container(inner).padding(20).width(Length::Fill).style(style::section_card)
-            };
-
-            content = content.push(info_card).push(output_card);
-        }
-        Some(AcquireCommand::Extend) => {
-            let input_card = {
-                let inner = column![
-                    dropzone_label("ZFF Files to Extend"),
-                    button(text("Browse ZFF files...").size(13)).on_press(Message::PickInputFile).padding(iced::Padding::from([10.0f32, 20.0])).style(style::btn_primary),
-                    text(format!("{selected_count} file(s) selected")).size(12).style(style::dim_text),
-                ].spacing(10).width(Length::Fill);
-                container(inner).padding(20).width(Length::Fill).style(style::section_card)
-            };
-            content = content.push(input_card);
-        }
         Some(AcquireCommand::Convert) => {
             let hint_text = match model.convert_format {
                 ConvertFormat::Tar => "Supported: .tar, .tar.gz, .tar.zst, .tar.lz4",

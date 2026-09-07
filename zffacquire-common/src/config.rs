@@ -2,8 +2,31 @@ use crate::{
     CompressionAlgorithm, EncryptionAlgorithm, HashType, KDFScheme, PBEScheme,
 };
 
+/// The tool that produced a container, as recorded in its description header.
+///
+/// This cannot be derived inside this library: `env!("CARGO_PKG_NAME")` here
+/// expands to `zffacquire-common`, which is not what acquired anything. Build
+/// it in the binary with [`tool_identification!`](crate::tool_identification).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolIdentification {
+    pub name: String,
+    pub version: String,
+}
+
+/// Names the calling crate as the acquiring tool.
+#[macro_export]
+macro_rules! tool_identification {
+    () => {
+        $crate::ToolIdentification {
+            name: env!("CARGO_PKG_NAME").to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    };
+}
+
 #[derive(Debug, Clone)]
 pub struct AcquireConfig {
+    pub tool: ToolIdentification,
     pub compression_algorithm: CompressionAlgorithm,
     pub compression_level: u8,
     pub compression_threshold: f32,
@@ -29,6 +52,7 @@ pub struct AcquireConfig {
 impl Default for AcquireConfig {
     fn default() -> Self {
         Self {
+            tool: tool_identification!(),
             compression_algorithm: CompressionAlgorithm::Zstd,
             compression_level: 3,
             compression_threshold: 1.05,

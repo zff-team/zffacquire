@@ -45,9 +45,12 @@ fn detect_media_type(device: &udev::Device) -> Option<String> {
             _ => {}
         }
     }
+    // Only names that identify the transport unambiguously are used as a
+    // fallback. "sd*" covers SATA, SAS, USB and anything else behind the SCSI
+    // disk driver, so guessing from it would write a transport into the
+    // evidence metadata that was never observed.
     let device_name = device.sysname().to_string_lossy();
     if device_name.starts_with("nvme") { return Some("nvme".to_string()); }
-    if device_name.starts_with("mmc") || device_name.starts_with("mmcblk") { return Some("emmc".to_string()); }
-    if device_name.starts_with("sd") { return Some("usb".to_string()); }
+    if device_name.starts_with("mmcblk") || device_name.starts_with("mmc") { return Some("emmc".to_string()); }
     None
 }

@@ -6,7 +6,7 @@ use zffacquire_common::{
     CompressionAlgorithm, EncryptionAlgorithm, KDFScheme, PBEScheme, HashType, AcquireConfig,
 };
 
-use crate::acquisition::{AcquireMessage, AcquireParams, start_acquisition};
+use crate::acquisition::{AcquireMessage, AcquireOutcome, AcquireParams, start_acquisition};
 use crate::screens::{
     command_select, parameters, input_select, review, progress,
 };
@@ -35,12 +35,15 @@ pub enum Screen {
     Progress,
 }
 
+/// The acquisitions the GUI can carry out.
+///
+/// Memory acquisition and extending an existing container are command line
+/// features: they need input the wizard has no screen for, so they are not
+/// offered here rather than being offered and then refused.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AcquireCommand {
     Physical,
     Logical,
-    Memory,
-    Extend,
     Convert,
 }
 
@@ -60,7 +63,6 @@ impl ConvertFormat {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum DeduplicationMode {
     None,
     InMemory,
@@ -133,6 +135,7 @@ pub enum Message {
     ChunkSizeChanged(String),
     ChunkmapSizeChanged(String),
     DeduplicationChanged(DeduplicationMode),
+    UncompressInputChanged(bool),
     CaseNumberChanged(String),
     EvidenceNumberChanged(String),
     ExaminerNameChanged(String),
@@ -144,6 +147,7 @@ pub enum Message {
     PickInputFile,
     PickInputFolder,
     PickOutputFile,
+    PickDeduplicationFile,
     InputFilesSelected(Vec<PathBuf>),
     OutputFileSelected(PathBuf),
     ClearInputFiles,
@@ -152,7 +156,7 @@ pub enum Message {
     AcquireProgress(u64, u64),
     AcquireLog(String),
     AcquireStatus(String),
-    AcquireFinished(Result<(), String>),
+    AcquireFinished(Result<AcquireOutcome, String>),
 }
 
 pub struct ZffAcquireApp {
@@ -175,6 +179,7 @@ pub struct ZffAcquireApp {
     pub chunk_size: String,
     pub chunkmap_size: String,
     pub deduplication: DeduplicationMode,
+    pub uncompress_input: bool,
     pub case_number: Option<String>,
     pub evidence_number: Option<String>,
     pub examiner_name: Option<String>,
@@ -190,7 +195,6 @@ pub struct ZffAcquireApp {
     pub log_lines: Vec<String>,
     pub is_running: bool,
 
-    pub is_linux: bool,
     #[allow(dead_code)]
     pub is_windows: bool,
 
@@ -200,7 +204,6 @@ pub struct ZffAcquireApp {
 
 impl ZffAcquireApp {
     pub fn new() -> (Self, Task<Message>) {
-        let is_linux = cfg!(target_os = "linux");
         let is_windows = cfg!(target_family = "windows");
 
         let app = Self {
@@ -222,6 +225,7 @@ impl ZffAcquireApp {
             chunk_size: "32KB".to_string(),
             chunkmap_size: "32KB".to_string(),
             deduplication: DeduplicationMode::None,
+            uncompress_input: false,
             case_number: None,
             evidence_number: None,
             examiner_name: None,
@@ -234,7 +238,6 @@ impl ZffAcquireApp {
             progress_status: String::new(),
             log_lines: Vec::new(),
             is_running: false,
-            is_linux,
             is_windows,
             cancel_token: None,
             acquire_generation: 0,
@@ -250,6 +253,7 @@ impl ZffAcquireApp {
     pub fn build_config(&self) -> AcquireConfig {
         let (kdf_scheme, pbe_scheme) = self.kdf_pbe.to_kdf_pbe();
         AcquireConfig {
+            tool: zffacquire_common::tool_identification!(),
             compression_algorithm: self.compression_algo.clone(),
             compression_level: self.compression_level,
             compression_threshold: self.compression_threshold,
@@ -268,8 +272,11 @@ impl ZffAcquireApp {
             segment_size: self.segment_size.clone(),
             chunk_size: self.chunk_size.clone(),
             chunkmap_size: self.chunkmap_size.clone(),
-            description_notes: self.notes.clone(),
-            uncompress_input: false,
+            // The object note above and the container description note are two
+            // distinct fields; the GUI offers only the former, so the latter
+            // stays empty rather than carrying a copy.
+            description_notes: None,
+            uncompress_input: self.uncompress_input,
         }
     }
 
@@ -348,6 +355,9 @@ impl ZffAcquireApp {
             Message::ChunkmapSizeChanged(size) => {
                 self.chunkmap_size = size;
             }
+            Message::UncompressInputChanged(value) => {
+                self.uncompress_input = value;
+            }
             Message::DeduplicationChanged(mode) => {
                 self.deduplication = mode;
             }
@@ -400,6 +410,19 @@ impl ZffAcquireApp {
                     |handle| match handle {
                         Some(h) => Message::InputFilesSelected(vec![h.path().to_path_buf()]),
                         None => Message::InputFilesSelected(Vec::new()),
+                    },
+                );
+            }
+            Message::PickDeduplicationFile => {
+                return Task::perform(
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Select the on-disk deduplication map")
+                        .set_file_name("deduplication.map")
+                        .save_file(),
+                    |handle| match handle {
+                        Some(h) => Message::DeduplicationChanged(
+                            DeduplicationMode::OnDisk(h.path().to_path_buf())),
+                        None => Message::DeduplicationChanged(DeduplicationMode::None),
                     },
                 );
             }
@@ -497,8 +520,13 @@ impl ZffAcquireApp {
                 self.is_running = false;
                 self.cancel_token = None;
                 match result {
-                    Ok(()) => {
+                    Ok(AcquireOutcome::Completed) => {
                         self.progress_status = "Acquisition completed successfully".to_string();
+                    }
+                    Ok(AcquireOutcome::Cancelled) => {
+                        self.progress_status =
+                            "Cancelled. The container was not finalised and cannot be read."
+                                .to_string();
                     }
                     Err(e) => {
                         self.progress_status = format!("Acquisition failed: {e}");

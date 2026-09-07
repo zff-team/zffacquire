@@ -10,48 +10,45 @@ jobs:
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
     strategy:
+      fail-fast: false
       matrix:
-        os:
-          - ubuntu-22.04
-          - windows-latest
-          - macos-latest
         include:
           - os: ubuntu-22.04
-            libacl: libacl1-dev
-            pkg_config: pkg-config
-            libudev: libudev-dev
-            toolchain: stable
             target: x86_64-unknown-linux-gnu
             name: Linux (Ubuntu 22.04)
           - os: windows-latest
-            libacl: ""
-            toolchain: nightly
             target: x86_64-pc-windows-msvc
             name: Windows x86_64 (MSVC)
           - os: macos-latest
-            libacl: ""
-            toolchain: stable
             target: aarch64-apple-darwin
             name: macOS (arm64)
-    
+
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
 
+    # Every target builds on stable. The nightly compiler the Windows job used
+    # to ask for is no longer needed by anything in the dependency graph.
     - name: Set up Rust
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: ${{ matrix.toolchain }}
-        target: ${{ matrix.target }}
+        targets: ${{ matrix.target }}
         components: clippy
-        default: true
-    
-    - name: Install deps (Linux only)
-      if: matrix.os == 'ubuntu-22.04'
-      run: sudo apt-get install -y ${{ matrix.libacl }} ${{ matrix.pkg_config }} ${{ matrix.libudev }}
 
-    - name: Build ${{ matrix.target }}
-      run: cargo clippy --verbose --all-features --target ${{ matrix.target }}
-    
+    - uses: Swatinem/rust-cache@v2
+
+    # libacl and libudev are for the acquisition crates; the rest is what the
+    # iced backend of zffacquire-gui links against on Linux.
+    - name: Install deps (Linux only)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          pkg-config libacl1-dev libudev-dev \
+          libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
+          libxi-dev libxrandr-dev
+
+    - name: Clippy ${{ matrix.target }}
+      run: cargo clippy --workspace --all-targets --all-features --target ${{ matrix.target }} -- -D warnings
+
     - name: Run tests
-      if: matrix.os != 'ubuntu-latest'
-      run: cargo test --verbose --all-features --target ${{ matrix.target }}
+      run: cargo test --workspace --all-features --target ${{ matrix.target }}

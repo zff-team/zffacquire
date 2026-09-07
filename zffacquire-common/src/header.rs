@@ -37,14 +37,24 @@ pub fn parse_chunk_size(s: &str) -> Result<u64, String> {
 }
 
 pub fn compression_header(config: &AcquireConfig) -> Result<CompressionHeader, String> {
-    if config.compression_level > 9 {
-        return Err(format!("Invalid compression level {}: must be 1-9", config.compression_level));
-    }
-    if config.compression_level < 1 {
-        return Err(format!("Invalid compression level {}: must be 1-9", config.compression_level));
+    match config.compression_algorithm {
+        // zstd accepts 1-22; the level is passed through to the encoder verbatim.
+        CompressionAlgorithm::Zstd => {
+            if !(ZSTD_COMPRESSION_LEVEL_MIN..=ZSTD_COMPRESSION_LEVEL_MAX).contains(&config.compression_level) {
+                return Err(format!(
+                    "Invalid compression level {} for zstd: must be {}-{}",
+                    config.compression_level, ZSTD_COMPRESSION_LEVEL_MIN, ZSTD_COMPRESSION_LEVEL_MAX));
+            }
+        },
+        // lz4 has no tunable level here, and none is ignored anyway.
+        CompressionAlgorithm::Lz4 | CompressionAlgorithm::None => (),
+        _ => return Err(ERROR_UNKNOWN_COMPRESSION_ALGORITHM.to_string()),
     }
     if config.compression_algorithm == CompressionAlgorithm::None {
         info!("Data will not be compressed");
+    } else if config.compression_algorithm == CompressionAlgorithm::Lz4 {
+        info!("Data will be compressed with {} (the compression level is not used by lz4)",
+            config.compression_algorithm);
     } else {
         info!("Data will be compressed with {} and level {}", config.compression_algorithm, config.compression_level);
     }
@@ -66,8 +76,8 @@ pub fn encryption_header(
         EncryptionAlgorithm::CHACHA20POLY1305 => gen_random_key(256),
         _ => return Err(ERROR_UNKNOWN_ENCRYPTION_ALGORITHM.to_string()),
     };
-    debug!("Using encryption key {}", base64engine.encode(encryption_key.clone()));
-
+    // The encryption key is deliberately never logged: it decrypts the whole
+    // container, and acquisition logs are routinely archived with the case.
     let pbe_nonce = gen_random_iv();
     debug!("Used pbe: nonce {}", base64engine.encode(pbe_nonce));
 
@@ -144,14 +154,11 @@ pub fn object_description_header(config: &AcquireConfig) -> DescriptionHeader {
     for (key, value) in &config.custom_descriptions {
         description_header.custom_identifier_value(key, value);
     }
-    description_header.custom_identifier_value(TOOLNAME_KEY, TOOLNAME_VALUE);
-    description_header.custom_identifier_value(TOOLVERSION_KEY, TOOLVERSION_VALUE);
+    description_header.custom_identifier_value(TOOLNAME_KEY, &config.tool.name);
+    description_header.custom_identifier_value(TOOLVERSION_KEY, &config.tool.version);
     let os = get_os_string();
     debug!("Detected OS: {}", os);
     description_header.set_operating_system(os);
-    if let Some(ref notes) = config.description_notes {
-        description_header.set_notes(notes);
-    }
     description_header
 }
 

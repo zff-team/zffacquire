@@ -1,14 +1,14 @@
 [package]
 name = "zffacquire"
-authors = ["ph0llux <ph0llux@pm.me>"]
-version = "2.0.0-rc.4"
-edition = "2024"
-rust-version = "1.89.0"
-license = "GPL-3.0"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
 description = "A command line utility for acquiring data into the forensic format Zff."
-readme = "README.md"
-homepage = "https://zff.dev"
-repository = "https://github.com/zff-team/zffacquire"
+readme = "../README.md"
 keywords = ["forensics", "security", "acquisition", "file-format", "file"]
 categories = ["command-line-utilities"]
 publish = true
@@ -20,7 +20,7 @@ test = true
 bench = true
 
 [dependencies]
-zffacquire-common = { path = "../zffacquire-common" }
+zffacquire-common = { workspace = true }
 base64 = "0.22"
 clap = { version = "4.6.2", features = ["derive"] }
 ed25519-dalek = { version = "3.0.0", features = ["rand_core", "digest"] }
@@ -35,6 +35,9 @@ rpassword = "7.5.4"
 serde = { version = "1.0", features = ["derive"] }
 toml = "1.1.3"
 phollpers = { version = "0.1.0", features = ["compression"] }
+zff = { workspace = true }
+
+[dev-dependencies]
 zff = { workspace = true }
 
 # platform specific dependencies

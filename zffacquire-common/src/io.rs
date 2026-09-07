@@ -3,7 +3,10 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use log::{debug, error};
+use log::debug;
+// Only the unix path canonicalization below reports through the log.
+#[cfg(target_family = "unix")]
+use log::error;
 
 #[cfg(target_family = "unix")]
 use crate::constants::*;
@@ -64,11 +67,15 @@ fn open_physical_drive(input_file: PathBuf) -> std::io::Result<Box<dyn ReadSeek>
 }
 
 // Recognize device names without mistaking ordinary image filenames for devices.
+// The three prefixes are the forms a user is likely to have in hand: the two
+// Win32 device namespaces and the NT object path that tools such as mountvol
+// print.
 #[cfg(any(target_family = "windows", test))]
 fn windows_device(path: &Path) -> std::io::Result<Option<(bool, u8)>> {
     let path = path.to_string_lossy().to_ascii_lowercase();
     let name = path.strip_prefix(r"\\.\")
         .or_else(|| path.strip_prefix(r"\\?\"))
+        .or_else(|| path.strip_prefix(r"\device\"))
         .unwrap_or(&path);
     let (physical, number) = if let Some(number) = name.strip_prefix("physicaldrive") {
         (true, number)
@@ -135,22 +142,25 @@ pub fn get_size_of_inputfile(input_file: PathBuf) -> Result<u64, String> {
     Ok(metadata.len())
 }
 
-pub fn open_files<P, V>(input_paths: V) -> Vec<File>
+/// Opens every given segment file, or fails.
+///
+/// A segment that cannot be opened is not skipped: a container read from an
+/// incomplete set of segments is not the container that was written, and
+/// carrying on with the rest would hide that.
+pub fn open_files<P, V>(input_paths: V) -> Result<Vec<File>, String>
 where
     P: AsRef<Path>,
     V: Borrow<Vec<P>>,
 {
-    let mut inputfiles = Vec::new();
-    debug!("Opening {} segment files.", input_paths.borrow().len());
-    for path in input_paths.borrow() {
-        match File::open(path.as_ref()) {
-            Ok(file) => inputfiles.push(file),
-            Err(e) => {
-                error!("Error opening file {}: {e}", path.as_ref().display());
-            },
-        };
-    }
-    inputfiles
+    let input_paths = input_paths.borrow();
+    debug!("Opening {} segment files.", input_paths.len());
+    input_paths
+        .iter()
+        .map(|path| {
+            File::open(path.as_ref())
+                .map_err(|e| format!("Error opening file {}: {e}", path.as_ref().display()))
+        })
+        .collect()
 }
 
 
@@ -165,6 +175,8 @@ mod tests {
             (r"\\?\PHYSICALDRIVE12", (true, 12)),
             ("PhysicalDrive255", (true, 255)),
             (r"\\?\HarddiskVolume1", (false, 1)),
+            (r"\Device\HarddiskVolume2", (false, 2)),
+            (r"\Device\PhysicalDrive1", (true, 1)),
         ] {
             assert_eq!(windows_device(Path::new(path)).unwrap(), Some(expected));
         }

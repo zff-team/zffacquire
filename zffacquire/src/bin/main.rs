@@ -5,7 +5,8 @@ use std::{
     collections::HashMap,
 };
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
+use std::path::Path;
 
 // - modules
 mod res;
@@ -69,6 +70,7 @@ use ewf::{self, EwfReader};
 use indicatif::{ProgressBar, MultiProgress, ProgressStyle, ProgressDrawTarget};
 use indicatif_log_bridge::LogWrapper;
 use rand::RngExt;
+use zffacquire_common::SigningKey;
 use log::{LevelFilter, error, debug, info};
 #[cfg(target_os = "linux")]
 use log::warn;
@@ -76,6 +78,8 @@ use log::warn;
 #[derive(Parser)]
 #[clap(about, version, author, override_usage="zffacquire <SUBCOMMAND> [OPTIONS]")]
 struct Cli {
+    /// Note describing the container as a whole. Distinct from --notes, which
+    /// describes the acquired object; setting one does not affect the other.
     #[clap(short='D', long="description-notes", global=true, required=false)]
     description_notes: Option<String>,
     #[clap(short='z', long="compression-algorithm", global=true, required=false, value_enum, default_value="zstd")]
@@ -92,6 +96,11 @@ struct Cli {
     chunkmap_size: String,
     #[clap(short='p', long="encrypt", global=true, required=false)]
     encrypt: bool,
+    /// Read the encryption password from this file instead of prompting, for
+    /// unattended acquisition. The first line is used, without its line ending;
+    /// "-" reads the password from stdin. The file is never written to.
+    #[clap(long="password-file", global=true, required=false, requires="encrypt")]
+    password_file: Option<PathBuf>,
     #[clap(short='r', long, global=true, required=false, conflicts_with="in_memory_chunk_deduplication", group="deduplication")]
     on_disk_chunk_deduplication: Option<PathBuf>,
     #[clap(short='m', long, global=true, required=false, conflicts_with="on_disk_chunk_deduplication", group="deduplication")]
@@ -112,6 +121,8 @@ struct Cli {
     evidence_number: Option<String>,
     #[clap(short='x', long="examiner-name", global=true, required=false)]
     examiner_name: Option<String>,
+    /// Note stored in the acquired object's description header. Distinct from
+    /// --description-notes, which describes the container.
     #[clap(short='n', long="notes", global=true, required=false)]
     notes: Option<String>,
     #[arg(short = 'O', long="custom-description", value_parser = parse_key_val::<String, String>, global=true, required=false)]
@@ -227,7 +238,7 @@ impl Cli {
             PasswordKdfValues::Pbkdf2Sha256Aes256 => (KDFScheme::PBKDF2SHA256, PBEScheme::AES256CBC),
             PasswordKdfValues::ScryptAes128 => (KDFScheme::Scrypt, PBEScheme::AES128CBC),
             PasswordKdfValues::ScryptAes256 => (KDFScheme::Scrypt, PBEScheme::AES256CBC),
-            PasswordKdfValues::Argon2idAes128 => (KDFScheme::Argon2id, PBEScheme::AES256CBC),
+            PasswordKdfValues::Argon2idAes128 => (KDFScheme::Argon2id, PBEScheme::AES128CBC),
             PasswordKdfValues::Argon2idAes256 => (KDFScheme::Argon2id, PBEScheme::AES256CBC),
         };
         let encryption_algorithm = match self.encryption_algorithm {
@@ -243,6 +254,7 @@ impl Cli {
             HashAlgorithmValues::Blake3 => HashType::Blake3,
         }).collect();
         zffacquire_common::AcquireConfig {
+            tool: zffacquire_common::tool_identification!(),
             compression_algorithm: match self.compression_algorithm {
                 CompressionAlgorithmValues::None => CompressionAlgorithm::None,
                 CompressionAlgorithmValues::Zstd => CompressionAlgorithm::Zstd,
@@ -271,10 +283,39 @@ impl Cli {
     }
 }
 
+/// Reads the password from a file (or stdin for "-"), for unattended runs.
+///
+/// Only the first line is taken, so a trailing newline in the file is not part
+/// of the password.
+fn read_password_file(path: &Path) -> Result<String, String> {
+    let mut content = String::new();
+    if path == Path::new("-") {
+        std::io::stdin().read_to_string(&mut content)
+            .map_err(|e| format!("Could not read the password from stdin: {e}"))?;
+    } else {
+        content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Could not read the password file {}: {e}", path.display()))?;
+    }
+    let password = content.lines().next().unwrap_or_default().to_string();
+    if password.is_empty() {
+        return Err("The given password file is empty.".to_string());
+    }
+    Ok(password)
+}
+
 fn ask_password(args: &Cli) -> Option<String> {
     if !args.encrypt {
         info!("Object will not be encrypted.");
         return None;
+    }
+    if let Some(path) = &args.password_file {
+        match read_password_file(path) {
+            Ok(password) => return Some(password),
+            Err(e) => {
+                error!("{e}");
+                exit(EXIT_STATUS_ERROR);
+            }
+        }
     }
     let password = match rpassword::prompt_password("Enter the encryption password: ") {
         Ok(pw) => pw,
@@ -315,9 +356,10 @@ fn main() {
         .filter_level(log_level)
         .build();
 
-    LogWrapper::new(multi.clone(), logger)
-        .try_init()
-        .unwrap();
+    if let Err(e) = LogWrapper::new(multi.clone(), logger).try_init() {
+        eprintln!("Could not initialize the logger: {e}");
+        exit(EXIT_STATUS_ERROR);
+    }
 
     debug!("Started zffacquire");
     let pid = std::process::id();
@@ -353,7 +395,14 @@ fn main() {
         None => None
     };
 
-    let mut optional_parameter = setup_optional_parameter(&args, &config);
+    let sign_keypair = match create_signing_key(&config) {
+        Ok(key) => key,
+        Err(e) => {
+            error!("{e}");
+            exit(EXIT_STATUS_ERROR);
+        }
+    };
+    let mut optional_parameter = setup_optional_parameter(&args, sign_keypair.clone());
 
     let mut obj_header = match common_create_object_header(&config, encryption_hdr, object_is_passive(&args)) {
         Ok(hdr) => hdr,
@@ -545,20 +594,28 @@ fn main() {
             ZffFilesOutput::ExtendContainer(append_files.to_vec())
         },
         Commands::Convert { convert_command } => {
-            let mut optional_parameter = setup_optional_parameter(&args, &config);
             setup_deduplication_map(&args, &mut optional_parameter, None);
             match convert_command {
                 ConvertSubcommands::Ewf { input_segments, outputfile } => {
                     obj_header.description_header.custom_identifier_value("zffacquire::ewf_image",
-                    format!("{:?}", input_segments.iter().map(|path| path.file_name().unwrap().to_string_lossy())));
-                    let ewf_reader = match EwfReader::open_segments(input_segments) {
+                    file_names(input_segments).join(", "));
+                    let mut ewf_reader = match EwfReader::open_segments(input_segments) {
                         Ok(reader) => reader,
                         Err(e) => {
                             error!("An error occured while trying to open ewf segment(s): {e}");
                             exit(EXIT_STATUS_ERROR)
                         }
                     };
-                    progressbar_value = ProgressBarValue::TotalSize(1);
+                    let ewf_size = match ewf_reader.seek(std::io::SeekFrom::End(0))
+                        .and_then(|size| ewf_reader.rewind().map(|_| size)) {
+                        Ok(size) => size,
+                        Err(e) => {
+                            error!("An error occured while trying to determine the size of the ewf image: {e}");
+                            exit(EXIT_STATUS_ERROR)
+                        }
+                    };
+                    info!("EWF image size: {}", ewf_size.bytes_as_hrb());
+                    progressbar_value = ProgressBarValue::TotalSize(ewf_size);
 
                     physical_objects.insert(obj_header, Box::new(ewf_reader));
 
@@ -573,7 +630,7 @@ fn main() {
                 },
                 ConvertSubcommands::Tar { inputfile, outputfile } => {
                     obj_header.description_header.custom_identifier_value("zffacquire::tar_archive::virtual_mapped_object",
-                    inputfile.file_name().unwrap().to_string_lossy());
+                    file_names(std::slice::from_ref(inputfile)).join(", "));
                     let fd = match File::open(inputfile) {
                         Ok(fd) => fd,
                         Err(e) => {
@@ -600,12 +657,19 @@ fn main() {
 
                     let zff_files_output = ZffFilesOutput::NewContainer(outputfile);
 
+                    // The intermediate container consumes these parameters, so the
+                    // writer for the virtual object further down is given a second
+                    // set -- carrying the same signature key, so both objects in
+                    // the container are signed by the same key.
+                    let intermediate_parameter = std::mem::replace(
+                        &mut optional_parameter,
+                        setup_optional_parameter(&args, sign_keypair.clone()));
                     let mut zs = match ZffWriter::new(
                         converter_objects,
                         HashMap::new(),
                         HashMap::new(),
                         hash_types.clone(),
-                        optional_parameter,
+                        intermediate_parameter,
                         zff_files_output,
                         ) {
                         Ok(zw) => zw,
@@ -623,7 +687,13 @@ fn main() {
                         }
                     };
 
-                    let reader_vec = open_files(&segment_filepaths);
+                    let reader_vec = match open_files(&segment_filepaths) {
+                        Ok(files) => files,
+                        Err(e) => {
+                            error!("{e}");
+                            exit(EXIT_STATUS_ERROR);
+                        }
+                    };
 
                     let mut zffreader = match ZffReader::with_reader(reader_vec) {
                         Ok(reader) => reader,
@@ -724,12 +794,16 @@ fn main() {
         None
     };
     let mut buffer = vec![0u8; chunk_size_val as usize];
-    let mut output_writer = setup_output_writer(&zff_files_output);
 
+    // When an existing container is extended, zff appends to the segment that
+    // carries the main footer -- the last one, not necessarily the first path
+    // given with -a. It reports that choice through output_path(), so the
+    // writer is derived from the writer's own view of the output rather than
+    // from the paths on the command line.
     let mut outputfile_path = zs.output_path().unwrap_or_default();
-    let mut current_extension = zs
-    .output_path()
-    .unwrap_or_default()
+    let mut output_writer = setup_output_writer(&zff_files_output, zs.output_path().as_deref());
+
+    let mut current_extension = outputfile_path
     .extension()
     .unwrap_or_default()
     .to_str()
@@ -789,16 +863,17 @@ fn main() {
     exit(EXIT_STATUS_SUCCESS);
 }
 
-fn setup_optional_parameter<R: ReadAt>(args: &Cli, config: &zffacquire_common::AcquireConfig) -> ZffCreationParameters<R> {
+/// Builds the creation parameters for one container.
+///
+/// The signature key is passed in rather than derived here: the tar conversion
+/// needs a second parameter set for the container it extends, and deriving a
+/// key again would sign the two halves of one container with different keys.
+fn setup_optional_parameter<R: ReadAt>(
+    args: &Cli,
+    sign_keypair: Option<SigningKey>,
+) -> ZffCreationParameters<R> {
     let mut rng = rand::rng();
 
-    let sign_keypair = match create_signing_key(config) {
-        Ok(key) => key,
-        Err(e) => {
-            error!("{e}");
-            exit(EXIT_STATUS_ERROR);
-        }
-    };
     let target_segment_size = if let Some(segment_size) = &args.segment_size {
         match hrs_parser(segment_size) {
             Some(val) => Some(val),
@@ -827,7 +902,7 @@ fn setup_optional_parameter<R: ReadAt>(args: &Cli, config: &zffacquire_common::A
         chunkmap_size,
         deduplication_metadata: None,
         unique_identifier,
-        description_notes: config.description_notes.clone(),
+        description_notes: args.description_notes.clone(),
     }
 }
 
@@ -856,13 +931,13 @@ fn setup_deduplication_map(
                 for (chunk_no, xxhash) in map {
                 if let Err(e) = deduplication_map.append_entry(xxhash, chunk_no) {
                     error!("An error occured while trying to append an entry to the deduplication map: {e}");
-                    exit(1);
+                    exit(EXIT_STATUS_ERROR);
                     }
                 }
             },
             Err(e) => {
                 error!("An error occured while trying to append an entry to the deduplication map: {e}");
-                exit(1);
+                exit(EXIT_STATUS_ERROR);
             },
         };
 
@@ -907,6 +982,19 @@ fn setup_segments(segment_file_paths: Vec<PathBuf>) -> Vec<File> {
         files.push(file);
     }
     files
+}
+
+/// File names of the given paths, for the description header.
+///
+/// A path with no final component (a bare "/" or one ending in "..") keeps its
+/// full display form rather than panicking on an absent file name.
+fn file_names(paths: &[PathBuf]) -> Vec<String> {
+    paths.iter()
+        .map(|path| match path.file_name() {
+            Some(name) => name.to_string_lossy().to_string(),
+            None => path.display().to_string(),
+        })
+        .collect()
 }
 
 fn object_is_passive(args: &Cli) -> bool {
