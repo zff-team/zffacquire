@@ -18,7 +18,7 @@ use zffacquire_common::constants::EXIT_STATUS_ERROR;
 
 use zff::io::zffwriter::ZffFilesOutput;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[cfg(target_os = "linux")]
