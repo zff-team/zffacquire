@@ -12,7 +12,9 @@ use crate::constants::HRS_PARSER_BASE;
 /// a `u64` -- silently wrapping a segment size is worse than refusing it.
 pub fn hrs_parser<V: Into<String>>(value: V) -> Option<u64> {
     let mut value = value.into().trim().to_string();
-    if let Ok(val) = value.parse() { return Some(val) };
+    if let Ok(val) = value.parse() {
+        return Some(val);
+    };
 
     let mut last_char = value.pop()?;
     if last_char == 'b' || last_char == 'B' {
@@ -34,7 +36,9 @@ pub fn hrs_parser<V: Into<String>>(value: V) -> Option<u64> {
     value.trim().parse::<u64>().ok()?.checked_mul(factor)
 }
 
-pub fn parse_key_val<T, U>(s: &str) -> std::result::Result<(T, U), Box<dyn std::error::Error + Send + Sync + 'static>>
+pub fn parse_key_val<T, U>(
+    s: &str,
+) -> std::result::Result<(T, U), Box<dyn std::error::Error + Send + Sync + 'static>>
 where
     T: std::str::FromStr,
     T::Err: std::error::Error + Send + Sync + 'static,
@@ -54,7 +58,9 @@ pub fn get_os_string() -> String {
         match Command::new("uname").arg("-a").output() {
             Ok(output) if output.status.success() => {
                 let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !s.is_empty() { return s; }
+                if !s.is_empty() {
+                    return s;
+                }
             }
             _ => {}
         }
@@ -65,7 +71,9 @@ pub fn get_os_string() -> String {
         let os = std::env::consts::OS;
         if let Ok(output) = Command::new("cmd").args(["/c", "ver"]).output() {
             let ver = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !ver.is_empty() { return format!("{} {}", os, ver); }
+            if !ver.is_empty() {
+                return format!("{} {}", os, ver);
+            }
         }
     }
     format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)

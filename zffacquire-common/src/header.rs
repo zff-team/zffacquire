@@ -1,36 +1,23 @@
 use std::path::Path;
 
-use log::{info, debug};
 use base64::{Engine, engine::general_purpose::STANDARD as base64engine};
+use log::{debug, info};
 
 use zff::{
-    VirtualObjectSource,
-    EncryptionAlgorithm,
-    CompressionAlgorithm,
-    KDFScheme,
-    PBEScheme,
-    header::{
-        CompressionHeader,
-        EncryptionHeader,
-        DescriptionHeader,
-        ObjectType,
-        KDFParameters,
-        PBKDF2SHA256Parameters,
-        ScryptParameters,
-        Argon2idParameters,
-        PBEHeader,
-        ObjectHeader,
-        ObjectFlags,
-    },
+    CompressionAlgorithm, EncryptionAlgorithm, KDFScheme, PBEScheme, VirtualObjectSource,
     constants::INITIAL_OBJECT_NUMBER,
     encryption::*,
+    header::{
+        Argon2idParameters, CompressionHeader, DescriptionHeader, EncryptionHeader, KDFParameters,
+        ObjectFlags, ObjectHeader, ObjectType, PBEHeader, PBKDF2SHA256Parameters, ScryptParameters,
+    },
 };
 
 use crate::AcquireConfig;
-use crate::utils::{hrs_parser, get_os_string};
 use crate::constants::*;
 #[cfg(target_os = "linux")]
 use crate::device::get_device_info;
+use crate::utils::{get_os_string, hrs_parser};
 
 pub fn parse_chunk_size(s: &str) -> Result<u64, String> {
     hrs_parser(s).ok_or_else(|| format!("{}: {}", ERROR_UNPARSABLE_CHUNKMAP_SIZE_VALUE, s))
@@ -40,12 +27,17 @@ pub fn compression_header(config: &AcquireConfig) -> Result<CompressionHeader, S
     match config.compression_algorithm {
         // zstd accepts 1-22; the level is passed through to the encoder verbatim.
         CompressionAlgorithm::Zstd => {
-            if !(ZSTD_COMPRESSION_LEVEL_MIN..=ZSTD_COMPRESSION_LEVEL_MAX).contains(&config.compression_level) {
+            if !(ZSTD_COMPRESSION_LEVEL_MIN..=ZSTD_COMPRESSION_LEVEL_MAX)
+                .contains(&config.compression_level)
+            {
                 return Err(format!(
                     "Invalid compression level {} for zstd: must be {}-{}",
-                    config.compression_level, ZSTD_COMPRESSION_LEVEL_MIN, ZSTD_COMPRESSION_LEVEL_MAX));
+                    config.compression_level,
+                    ZSTD_COMPRESSION_LEVEL_MIN,
+                    ZSTD_COMPRESSION_LEVEL_MAX
+                ));
             }
-        },
+        }
         // lz4 has no tunable level here, and none is ignored anyway.
         CompressionAlgorithm::Lz4 | CompressionAlgorithm::None => (),
         _ => return Err(ERROR_UNKNOWN_COMPRESSION_ALGORITHM.to_string()),
@@ -53,12 +45,21 @@ pub fn compression_header(config: &AcquireConfig) -> Result<CompressionHeader, S
     if config.compression_algorithm == CompressionAlgorithm::None {
         info!("Data will not be compressed");
     } else if config.compression_algorithm == CompressionAlgorithm::Lz4 {
-        info!("Data will be compressed with {} (the compression level is not used by lz4)",
-            config.compression_algorithm);
+        info!(
+            "Data will be compressed with {} (the compression level is not used by lz4)",
+            config.compression_algorithm
+        );
     } else {
-        info!("Data will be compressed with {} and level {}", config.compression_algorithm, config.compression_level);
+        info!(
+            "Data will be compressed with {} and level {}",
+            config.compression_algorithm, config.compression_level
+        );
     }
-    Ok(CompressionHeader::new(config.compression_algorithm.clone(), config.compression_level, config.compression_threshold))
+    Ok(CompressionHeader::new(
+        config.compression_algorithm.clone(),
+        config.compression_level,
+        config.compression_threshold,
+    ))
 }
 
 pub fn encryption_header(
@@ -87,52 +88,103 @@ pub fn encryption_header(
     let (pbe_header, encrypted_encryption_key) = match kdf {
         KDFScheme::PBKDF2SHA256 => {
             let iterations = 310000;
-            let kdf_parameters = KDFParameters::PBKDF2SHA256Parameters(PBKDF2SHA256Parameters::new(iterations, salt));
+            let kdf_parameters = KDFParameters::PBKDF2SHA256Parameters(
+                PBKDF2SHA256Parameters::new(iterations, salt),
+            );
             let pbe_header = PBEHeader::new(kdf, pbe.clone(), kdf_parameters, pbe_nonce);
             let encrypted_encryption_key = match pbe {
-                PBEScheme::AES128CBC => encrypt_pbkdf2sha256_aes128cbc(iterations, &salt, pbe_nonce, password.trim(), &encryption_key)
-                    .map_err(|_| ERROR_ENCRYPT_KEY.to_string())?,
-                PBEScheme::AES256CBC => encrypt_pbkdf2sha256_aes256cbc(iterations, &salt, pbe_nonce, password.trim(), &encryption_key)
-                    .map_err(|_| ERROR_ENCRYPT_KEY.to_string())?,
+                PBEScheme::AES128CBC => encrypt_pbkdf2sha256_aes128cbc(
+                    iterations,
+                    &salt,
+                    pbe_nonce,
+                    password.trim(),
+                    &encryption_key,
+                )
+                .map_err(|_| ERROR_ENCRYPT_KEY.to_string())?,
+                PBEScheme::AES256CBC => encrypt_pbkdf2sha256_aes256cbc(
+                    iterations,
+                    &salt,
+                    pbe_nonce,
+                    password.trim(),
+                    &encryption_key,
+                )
+                .map_err(|_| ERROR_ENCRYPT_KEY.to_string())?,
                 _ => return Err(ERROR_UNKNOWN_PASSWORD_KDF.to_string()),
             };
             (pbe_header, encrypted_encryption_key)
-        },
+        }
         KDFScheme::Scrypt => {
             let logn = SCRYPT_LOGN_RECOMMENDED;
             let r = SCRYPT_R_RECOMMENDED;
             let p = SCRYPT_P_RECOMMENDED;
-            let kdf_parameters = KDFParameters::ScryptParameters(ScryptParameters::new(logn, r, p, salt));
+            let kdf_parameters =
+                KDFParameters::ScryptParameters(ScryptParameters::new(logn, r, p, salt));
             let pbe_header = PBEHeader::new(kdf, pbe.clone(), kdf_parameters, pbe_nonce);
             let encrypted_encryption_key = match pbe {
-                PBEScheme::AES128CBC => encrypt_scrypt_aes128cbc(logn, r, p, &salt, pbe_nonce, password.trim(), &encryption_key)
-                    .map_err(|_| ERROR_ENCRYPT_KEY.to_string())?,
-                PBEScheme::AES256CBC => encrypt_scrypt_aes256cbc(logn, r, p, &salt, pbe_nonce, password.trim(), &encryption_key)
-                    .map_err(|_| ERROR_ENCRYPT_KEY.to_string())?,
+                PBEScheme::AES128CBC => encrypt_scrypt_aes128cbc(
+                    logn,
+                    r,
+                    p,
+                    &salt,
+                    pbe_nonce,
+                    password.trim(),
+                    &encryption_key,
+                )
+                .map_err(|_| ERROR_ENCRYPT_KEY.to_string())?,
+                PBEScheme::AES256CBC => encrypt_scrypt_aes256cbc(
+                    logn,
+                    r,
+                    p,
+                    &salt,
+                    pbe_nonce,
+                    password.trim(),
+                    &encryption_key,
+                )
+                .map_err(|_| ERROR_ENCRYPT_KEY.to_string())?,
                 _ => return Err(ERROR_UNKNOWN_PASSWORD_KDF.to_string()),
             };
             (pbe_header, encrypted_encryption_key)
-        },
+        }
         KDFScheme::Argon2id => {
             let mem_cost = ARGON_MEM_COST_RECOMMENDED;
             let lanes = ARGON_LANES_RECOMMENDED;
             let iterations = ARGON_ITERATIONS_RECOMMENDED;
-            let kdf_parameters = KDFParameters::Argon2idParameters(Argon2idParameters::new(mem_cost, lanes, iterations, salt));
+            let kdf_parameters = KDFParameters::Argon2idParameters(Argon2idParameters::new(
+                mem_cost, lanes, iterations, salt,
+            ));
             let pbe_header = PBEHeader::new(kdf, pbe.clone(), kdf_parameters, pbe_nonce);
             let encrypted_encryption_key = match pbe {
-                PBEScheme::AES128CBC => encrypt_argon2_aes128cbc(mem_cost, lanes, iterations, &salt, &pbe_nonce, password.trim(), &encryption_key)
-                    .map_err(|_| ERROR_ENCRYPT_KEY.to_string())?,
-                PBEScheme::AES256CBC => encrypt_argon2_aes256cbc(mem_cost, lanes, iterations, &salt, &pbe_nonce, password.trim(), &encryption_key)
-                    .map_err(|_| ERROR_ENCRYPT_KEY.to_string())?,
+                PBEScheme::AES128CBC => encrypt_argon2_aes128cbc(
+                    mem_cost,
+                    lanes,
+                    iterations,
+                    &salt,
+                    &pbe_nonce,
+                    password.trim(),
+                    &encryption_key,
+                )
+                .map_err(|_| ERROR_ENCRYPT_KEY.to_string())?,
+                PBEScheme::AES256CBC => encrypt_argon2_aes256cbc(
+                    mem_cost,
+                    lanes,
+                    iterations,
+                    &salt,
+                    &pbe_nonce,
+                    password.trim(),
+                    &encryption_key,
+                )
+                .map_err(|_| ERROR_ENCRYPT_KEY.to_string())?,
                 _ => return Err(ERROR_UNKNOWN_PASSWORD_KDF.to_string()),
             };
             (pbe_header, encrypted_encryption_key)
-        },
+        }
         _ => return Err(ERROR_UNKNOWN_PASSWORD_KDF.to_string()),
     };
 
-    let mut encryption_header = EncryptionHeader::new(pbe_header, encryption_algorithm, encrypted_encryption_key);
-    encryption_header.decrypt_encryption_key(password)
+    let mut encryption_header =
+        EncryptionHeader::new(pbe_header, encryption_algorithm, encrypted_encryption_key);
+    encryption_header
+        .decrypt_encryption_key(password)
         .map_err(|e| format!("{}: {}", ERROR_ENCRYPT_KEY, e))?;
     Ok(encryption_header)
 }

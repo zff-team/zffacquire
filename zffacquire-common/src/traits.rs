@@ -17,7 +17,11 @@ impl HumanReadable for u64 {
         while size >= DIVISOR.powi(exponent + 1) && (exponent as usize) < UNIT.len() - 1 {
             exponent += 1;
         }
-        format!("{:.2}{}", size / DIVISOR.powi(exponent), UNIT[exponent as usize])
+        format!(
+            "{:.2}{}",
+            size / DIVISOR.powi(exponent),
+            UNIT[exponent as usize]
+        )
     }
 }
 

@@ -1,20 +1,20 @@
+use iced::{Element, Task, Theme};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use iced::{Element, Task, Theme};
 use zffacquire_common::{
-    CompressionAlgorithm, EncryptionAlgorithm, KDFScheme, PBEScheme, HashType, AcquireConfig,
+    AcquireConfig, CompressionAlgorithm, EncryptionAlgorithm, HashType, KDFScheme, PBEScheme,
 };
 
 use crate::acquisition::{AcquireMessage, AcquireOutcome, AcquireParams, start_acquisition};
-use crate::screens::{
-    command_select, parameters, input_select, review, progress,
-};
+use crate::screens::{command_select, input_select, parameters, progress, review};
 
 static ACQUIRE_RX: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<AcquireMessage>>> =
     Mutex::new(None);
 
-fn build_acquire_stream(_generation: &u64) -> std::pin::Pin<Box<dyn futures::Stream<Item = Message> + Send>> {
+fn build_acquire_stream(
+    _generation: &u64,
+) -> std::pin::Pin<Box<dyn futures::Stream<Item = Message> + Send>> {
     let rx = ACQUIRE_RX.lock().unwrap().take().expect("receiver not set");
     Box::pin(futures::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|msg| match msg {
@@ -362,10 +362,18 @@ impl ZffAcquireApp {
                 self.deduplication = mode;
             }
             Message::CaseNumberChanged(number) => {
-                self.case_number = if number.is_empty() { None } else { Some(number) };
+                self.case_number = if number.is_empty() {
+                    None
+                } else {
+                    Some(number)
+                };
             }
             Message::EvidenceNumberChanged(number) => {
-                self.evidence_number = if number.is_empty() { None } else { Some(number) };
+                self.evidence_number = if number.is_empty() {
+                    None
+                } else {
+                    Some(number)
+                };
             }
             Message::ExaminerNameChanged(name) => {
                 self.examiner_name = if name.is_empty() { None } else { Some(name) };
@@ -374,7 +382,8 @@ impl ZffAcquireApp {
                 self.notes = if notes.is_empty() { None } else { Some(notes) };
             }
             Message::AddCustomDescription => {
-                self.custom_descriptions.push((String::new(), String::new()));
+                self.custom_descriptions
+                    .push((String::new(), String::new()));
             }
             Message::RemoveCustomDescription(index) => {
                 if index < self.custom_descriptions.len() {
@@ -420,8 +429,9 @@ impl ZffAcquireApp {
                         .set_file_name("deduplication.map")
                         .save_file(),
                     |handle| match handle {
-                        Some(h) => Message::DeduplicationChanged(
-                            DeduplicationMode::OnDisk(h.path().to_path_buf())),
+                        Some(h) => Message::DeduplicationChanged(DeduplicationMode::OnDisk(
+                            h.path().to_path_buf(),
+                        )),
                         None => Message::DeduplicationChanged(DeduplicationMode::None),
                     },
                 );
@@ -538,8 +548,8 @@ impl ZffAcquireApp {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        use iced::widget::{column, container};
         use iced::Length;
+        use iced::widget::{column, container};
 
         let stepper = crate::style::stepper_bar::<Message>(&self.current_screen);
 
@@ -572,10 +582,7 @@ impl ZffAcquireApp {
         if !self.is_running {
             return iced::Subscription::none();
         }
-        iced::Subscription::run_with(
-            self.acquire_generation,
-            build_acquire_stream,
-        )
+        iced::Subscription::run_with(self.acquire_generation, build_acquire_stream)
     }
 
     #[allow(dead_code)]

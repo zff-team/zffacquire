@@ -1,8 +1,7 @@
 use iced::{
-    Border, Shadow, Vector,
+    Background, Border, Color, Length, Shadow, Theme, Vector,
     gradient::{self, Gradient},
     widget::{button, checkbox, container, progress_bar, text, text_input},
-    Background, Color, Length, Theme,
 };
 
 use crate::app::Screen;
@@ -81,10 +80,7 @@ fn shadow_sm() -> Shadow {
 
 fn shadow_glow(color: Color) -> Shadow {
     Shadow {
-        color: Color {
-            a: 0.25,
-            ..color
-        },
+        color: Color { a: 0.25, ..color },
         offset: Vector::new(0.0, 2.0),
         blur_radius: 12.0,
     }
@@ -148,7 +144,10 @@ pub fn stepper_container(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(BG_SURFACE.into()),
         text_color: Some(TEXT),
-        border: Border::default().rounded(0).width(0).color(Color::TRANSPARENT),
+        border: Border::default()
+            .rounded(0)
+            .width(0)
+            .color(Color::TRANSPARENT),
         shadow: Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.2),
             offset: Vector::new(0.0, 2.0),
@@ -570,13 +569,11 @@ pub fn stepper_bar<'a, Message: 'a>(current_screen: &'a Screen) -> iced::Element
         let num_str = *num;
         let label_str = *label;
 
-        let circle = container(
-            iced::widget::text(num_str)
-                .size(13)
-                .style(move |_theme: &Theme| text::Style {
-                    color: Some(circle_text_color),
-                }),
-        )
+        let circle = container(iced::widget::text(num_str).size(13).style(
+            move |_theme: &Theme| text::Style {
+                color: Some(circle_text_color),
+            },
+        ))
         .center_y(24)
         .center_x(24)
         .style(move |_theme: &Theme| container::Style {
@@ -609,8 +606,9 @@ pub fn stepper_bar<'a, Message: 'a>(current_screen: &'a Screen) -> iced::Element
             })
             .center();
 
-        let step_col =
-            iced::widget::column![circle, label_text].spacing(4).align_x(iced::Center);
+        let step_col = iced::widget::column![circle, label_text]
+            .spacing(4)
+            .align_x(iced::Center);
 
         steps_row = steps_row.push(step_col);
 

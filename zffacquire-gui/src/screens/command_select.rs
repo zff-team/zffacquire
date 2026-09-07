@@ -1,5 +1,5 @@
-use iced::{Element, Length};
 use iced::widget::{button, column, container, text};
+use iced::{Element, Length};
 
 use crate::app::{AcquireCommand, Message, ZffAcquireApp};
 use crate::style;
@@ -28,9 +28,24 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
     // listing them here would let the user walk the whole wizard only to be
     // told at the end that nothing was going to happen.
     let commands: Vec<(&str, &str, AcquireCommand, bool)> = vec![
-        ("Physical Disk", "Raw disk image acquisition", AcquireCommand::Physical, true),
-        ("Logical Files", "File and folder acquisition", AcquireCommand::Logical, true),
-        ("Convert Format", "Convert TAR or E01 to ZFF", AcquireCommand::Convert, true),
+        (
+            "Physical Disk",
+            "Raw disk image acquisition",
+            AcquireCommand::Physical,
+            true,
+        ),
+        (
+            "Logical Files",
+            "File and folder acquisition",
+            AcquireCommand::Logical,
+            true,
+        ),
+        (
+            "Convert Format",
+            "Convert TAR or E01 to ZFF",
+            AcquireCommand::Convert,
+            true,
+        ),
     ];
 
     let mut cards = column![].spacing(10).width(Length::Fill).max_width(520);
@@ -44,7 +59,11 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
         let card_title = text(label)
             .size(15)
             .width(Length::Fill)
-            .style(if is_selected { style::title_text } else { style::dim_text });
+            .style(if is_selected {
+                style::title_text
+            } else {
+                style::dim_text
+            });
 
         let card_desc = text(description)
             .size(12)
@@ -57,7 +76,11 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
             .on_press(Message::SelectCommand(cmd))
             .width(Length::Fill)
             .padding(16.0)
-            .style(if is_selected { style::btn_selected } else { style::btn_secondary });
+            .style(if is_selected {
+                style::btn_selected
+            } else {
+                style::btn_secondary
+            });
 
         cards = cards.push(card);
     }
@@ -93,7 +116,12 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
         text("").height(Length::FillPortion(1)),
     ]
     .spacing(12)
-    .padding(iced::Padding { top: 0.0, right: 40.0, bottom: 0.0, left: 40.0 })
+    .padding(iced::Padding {
+        top: 0.0,
+        right: 40.0,
+        bottom: 0.0,
+        left: 40.0,
+    })
     .width(Length::Fill)
     .height(Length::Fill)
     .align_x(iced::Center);

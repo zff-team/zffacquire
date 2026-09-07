@@ -1,16 +1,16 @@
-use std::io::{Read, Cursor};
+use std::io::{Cursor, Read};
 use std::ops::Range;
 use std::process::exit;
 
 use log::{debug, error};
 
 use aya::{
-    programs::UProbe,
     Ebpf,
     maps::{MapData, Queue},
+    programs::UProbe,
 };
-use procfs::process::{Process, MMPermissions};
 use emd_common::*;
+use procfs::process::{MMPermissions, Process};
 
 use zffacquire_common::constants::EXIT_STATUS_ERROR;
 
@@ -20,7 +20,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const BUFFER_QUEUE_MAP: &str = "BUFFER_QUEUE";
 
 pub(crate) enum MemoryReaderType {
-    Emd
+    Emd,
 }
 
 #[derive(Default)]
@@ -43,8 +43,11 @@ impl Emd {
         debug!("Load eBPF program.");
         let mut ebpf = Ebpf::load(emd_ebpf::EBPF_BINARY)?;
         debug!("Initialize read_kernel_memory function.");
-        let program: &mut UProbe = ebpf.program_mut(READ_KERNEL_MEM)
-            .ok_or_else(|| format!("The eBPF object does not contain the program {READ_KERNEL_MEM}"))?
+        let program: &mut UProbe = ebpf
+            .program_mut(READ_KERNEL_MEM)
+            .ok_or_else(|| {
+                format!("The eBPF object does not contain the program {READ_KERNEL_MEM}")
+            })?
             .try_into()?;
         program.load()?;
 
@@ -55,8 +58,10 @@ impl Emd {
         program.attach(None, offset, PROC_SELF_EXE, None)?;
 
         debug!("Initializing buffer queue.");
-        let mut buffer_queue = Queue::try_from(ebpf.map_mut(BUFFER_QUEUE_MAP)
-            .ok_or_else(|| format!("The eBPF object does not contain the map {BUFFER_QUEUE_MAP}"))?)?;
+        let mut buffer_queue =
+            Queue::try_from(ebpf.map_mut(BUFFER_QUEUE_MAP).ok_or_else(|| {
+                format!("The eBPF object does not contain the map {BUFFER_QUEUE_MAP}")
+            })?)?;
 
         let page_offset_base = get_page_offset_base(&mut buffer_queue)?;
         let system_ram_ranges = extract_mem_range(SEPARATOR_SYSTEM_RAM)?;
@@ -66,7 +71,7 @@ impl Emd {
             &mut buffer_queue,
             &system_ram_ranges,
             &mut inner_range_position,
-            page_offset_base
+            page_offset_base,
         );
 
         let remaining_buffer = internal_buffer.len();
@@ -87,14 +92,16 @@ impl Emd {
     /// where unwinding would abandon a container that can still be finalised.
     fn fill_buffer(&mut self) -> std::io::Result<()> {
         let map = self.ebpf.map_mut(BUFFER_QUEUE_MAP).ok_or_else(|| {
-            std::io::Error::other(format!("The eBPF map {BUFFER_QUEUE_MAP} is no longer available"))
+            std::io::Error::other(format!(
+                "The eBPF map {BUFFER_QUEUE_MAP} is no longer available"
+            ))
         })?;
         let mut buffer_queue = Queue::try_from(map).map_err(std::io::Error::other)?;
         let internal_buffer = get_next_buffer_value(
             &mut buffer_queue,
             &self.system_ram_ranges,
             &mut self.inner_range_position,
-            self.page_offset_base
+            self.page_offset_base,
         );
         self.internal_buffer = Cursor::new(internal_buffer);
         Ok(())
@@ -132,71 +139,74 @@ fn get_next_buffer_value(
     system_ram_range: &[Range<u64>],
     inner_range_position: &mut InnerRangePosition,
     mapping_offset: u64,
-    ) -> Vec<u8> {
-        let mut remaining = MAX_QUEUE_SIZE;
-        let mut buffer = Vec::new();
+) -> Vec<u8> {
+    let mut remaining = MAX_QUEUE_SIZE;
+    let mut buffer = Vec::new();
 
-        while remaining > 0 {
-            let range = match system_ram_range.get(inner_range_position.current_range as usize) {
-                Some(range) => range,
-                None => return buffer,
-            };
+    while remaining > 0 {
+        let range = match system_ram_range.get(inner_range_position.current_range as usize) {
+            Some(range) => range,
+            None => return buffer,
+        };
 
-            let position_offset = range.start + inner_range_position.offset;
-            let available = (range.end - position_offset) as usize;
-            let dump_size = available.min(remaining);
+        let position_offset = range.start + inner_range_position.offset;
+        let available = (range.end - position_offset) as usize;
+        let dump_size = available.min(remaining);
 
-            if dump_size == 0 {
-                inner_range_position.current_range += 1;
-                inner_range_position.offset = 0;
-                continue;
-            }
+        if dump_size == 0 {
+            inner_range_position.current_range += 1;
+            inner_range_position.offset = 0;
+            continue;
+        }
 
-            let lime_header = LimeHeader {
-                start_address: position_offset,
-                end_address: position_offset + dump_size as u64,
-                ..Default::default()
-            };
-            buffer.extend(lime_header.as_bytes());
+        let lime_header = LimeHeader {
+            start_address: position_offset,
+            end_address: position_offset + dump_size as u64,
+            ..Default::default()
+        };
+        buffer.extend(lime_header.as_bytes());
 
-            read_kernel_memory(mapping_offset+position_offset, dump_size);
-            let queue_elements = calc_queue_elements(dump_size);
-            let mut unreadable_offsets = None;
-            for i in 0..queue_elements {
-                let queue_element_size = if i == queue_elements && !dump_size.is_multiple_of(BUFFER_SIZE) {
+        read_kernel_memory(mapping_offset + position_offset, dump_size);
+        let queue_elements = calc_queue_elements(dump_size);
+        let mut unreadable_offsets = None;
+        for i in 0..queue_elements {
+            let queue_element_size =
+                if i == queue_elements && !dump_size.is_multiple_of(BUFFER_SIZE) {
                     dump_size % BUFFER_SIZE
                 } else {
                     BUFFER_SIZE
                 };
-                let inner_buffer = match buffer_queue.pop(0) {
-                    Ok(value) => value,
-                    Err(_) => {
-                        if unreadable_offsets.is_none() {
-                            unreadable_offsets = Some((position_offset, i));
-                        }
-                        [0u8; BUFFER_SIZE]
+            let inner_buffer = match buffer_queue.pop(0) {
+                Ok(value) => value,
+                Err(_) => {
+                    if unreadable_offsets.is_none() {
+                        unreadable_offsets = Some((position_offset, i));
                     }
-                };
-                buffer.extend(&inner_buffer[..queue_element_size]);
-            }
-
-            if let Some((offset, i)) = unreadable_offsets {
-                let start_offset = offset + (BUFFER_SIZE * i) as u64;
-                let end_offset = offset + (BUFFER_SIZE * (queue_elements-1)) as u64;
-                debug!("Could not read 0x{start_offset:x} - 0x{end_offset:x}. Writing zeros for appropriate zone.");
-            }
-
-            inner_range_position.offset += dump_size as u64;
-            remaining -= dump_size;
-
-            if inner_range_position.offset + range.start >= range.end {
-                inner_range_position.current_range += 1;
-                inner_range_position.offset = 0;
-            }
+                    [0u8; BUFFER_SIZE]
+                }
+            };
+            buffer.extend(&inner_buffer[..queue_element_size]);
         }
 
-        buffer
+        if let Some((offset, i)) = unreadable_offsets {
+            let start_offset = offset + (BUFFER_SIZE * i) as u64;
+            let end_offset = offset + (BUFFER_SIZE * (queue_elements - 1)) as u64;
+            debug!(
+                "Could not read 0x{start_offset:x} - 0x{end_offset:x}. Writing zeros for appropriate zone."
+            );
+        }
+
+        inner_range_position.offset += dump_size as u64;
+        remaining -= dump_size;
+
+        if inner_range_position.offset + range.start >= range.end {
+            inner_range_position.current_range += 1;
+            inner_range_position.offset = 0;
+        }
     }
+
+    buffer
+}
 
 #[unsafe(no_mangle)]
 #[inline(never)]
@@ -221,7 +231,7 @@ pub(crate) fn memory_size() -> Result<u64> {
     Ok(total_size)
 }
 
-fn get_page_offset_base(buffer_queue: &mut Queue<&mut MapData, [u8; BUFFER_SIZE]>) -> Result<u64>{
+fn get_page_offset_base(buffer_queue: &mut Queue<&mut MapData, [u8; BUFFER_SIZE]>) -> Result<u64> {
     let page_offset_base_addr = get_page_offset_base_address_from_file()?;
     read_kernel_memory(page_offset_base_addr, 8);
     let slice: &[u8] = &buffer_queue.pop(0)?[..8];
@@ -233,9 +243,10 @@ fn get_base_addr() -> Result<usize> {
     let maps = me.maps()?;
 
     for entry in maps {
-        if entry.perms.contains(MMPermissions::EXECUTE) &&
-        entry.perms.contains(MMPermissions::READ) &&
-        entry.perms.contains(MMPermissions::PRIVATE) {
+        if entry.perms.contains(MMPermissions::EXECUTE)
+            && entry.perms.contains(MMPermissions::READ)
+            && entry.perms.contains(MMPermissions::PRIVATE)
+        {
             return Ok((entry.address.0 - entry.offset) as usize);
         }
     }

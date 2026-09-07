@@ -38,7 +38,11 @@ fn segments(base: &Path) -> Vec<PathBuf> {
 /// not open it.
 fn read_back(base: &Path) -> Result<Vec<u64>, String> {
     let paths = segments(base);
-    assert!(!paths.is_empty(), "no segment was written for {}", base.display());
+    assert!(
+        !paths.is_empty(),
+        "no segment was written for {}",
+        base.display()
+    );
     let files: Vec<File> = paths
         .iter()
         .map(|p| File::open(p).unwrap_or_else(|e| panic!("cannot open {}: {e}", p.display())))
@@ -87,7 +91,11 @@ fn physical_container_is_readable() {
     let input = input_image(dir.path(), "disk.raw", 2 * 1024 * 1024);
     let out = dir.path().join("physical");
 
-    run(zffacquire().args(["physical", "-i"]).arg(&input).arg("-o").arg(&out));
+    run(zffacquire()
+        .args(["physical", "-i"])
+        .arg(&input)
+        .arg("-o")
+        .arg(&out));
 
     assert_eq!(read_back(&out).expect("container is readable"), vec![1]);
 }
@@ -98,7 +106,11 @@ fn extending_a_single_segment_container_keeps_it_readable() {
     let input = input_image(dir.path(), "disk.raw", 1024 * 1024);
     let out = dir.path().join("single");
 
-    run(zffacquire().args(["physical", "-i"]).arg(&input).arg("-o").arg(&out));
+    run(zffacquire()
+        .args(["physical", "-i"])
+        .arg(&input)
+        .arg("-o")
+        .arg(&out));
     run(zffacquire()
         .args(["extend", "physical", "-i"])
         .arg(&input)
@@ -125,10 +137,16 @@ fn extending_a_multi_segment_container_keeps_it_readable() {
         .args(["-s", "1M"]));
 
     let written = segments(&out);
-    assert!(written.len() > 1, "expected several segments, got {written:?}");
+    assert!(
+        written.len() > 1,
+        "expected several segments, got {written:?}"
+    );
 
     let mut extend = zffacquire();
-    extend.args(["extend", "physical", "-i"]).arg(&input).arg("-a");
+    extend
+        .args(["extend", "physical", "-i"])
+        .arg(&input)
+        .arg("-a");
     for segment in &written {
         extend.arg(segment);
     }
@@ -160,7 +178,11 @@ fn converted_tar_container_is_readable() {
     assert!(status.success(), "could not create the test archive");
 
     let out = dir.path().join("converted");
-    run(zffacquire().args(["convert", "tar", "-i"]).arg(&archive).arg("-o").arg(&out));
+    run(zffacquire()
+        .args(["convert", "tar", "-i"])
+        .arg(&archive)
+        .arg("-o")
+        .arg(&out));
 
     // The passive object carrying the archive, and the virtual object mapping it.
     assert_eq!(read_back(&out).expect("container is readable"), vec![1, 2]);

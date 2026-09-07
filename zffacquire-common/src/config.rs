@@ -1,6 +1,4 @@
-use crate::{
-    CompressionAlgorithm, EncryptionAlgorithm, HashType, KDFScheme, PBEScheme,
-};
+use crate::{CompressionAlgorithm, EncryptionAlgorithm, HashType, KDFScheme, PBEScheme};
 
 /// The tool that produced a container, as recorded in its description header.
 ///
