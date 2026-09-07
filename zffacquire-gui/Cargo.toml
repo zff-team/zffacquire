@@ -8,9 +8,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "A graphical utility for acquiring data into the forensic format Zff."
-# Published separately, if at all: it carries a GUI toolchain the command line
-# tool does not need.
-publish = false
+publish = true
 
 [[bin]]
 name = "zffacquire-gui"
