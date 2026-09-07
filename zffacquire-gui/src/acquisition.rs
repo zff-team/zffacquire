@@ -47,6 +47,8 @@ pub enum AcquireOutcome {
 
 pub struct AcquireParams {
     pub command: AcquireCommand,
+    pub append_command: AcquireCommand,
+    pub segments: Vec<PathBuf>,
     pub convert_format: ConvertFormat,
     pub config: AcquireConfig,
     pub password: Option<String>,
@@ -63,9 +65,8 @@ pub fn start_acquisition(
     sender: tokio::sync::mpsc::UnboundedSender<AcquireMessage>,
     cancel_token: Arc<AtomicBool>,
 ) {
-    thread::spawn(move || {
-        cancel_token.store(false, Ordering::Relaxed);
-        match run_acquisition(params, &sender, &cancel_token) {
+    thread::spawn(
+        move || match run_acquisition(params, &sender, &cancel_token) {
             Ok(outcome) => {
                 let _ = sender.send(AcquireMessage::Finished(Ok(outcome)));
             }
@@ -73,8 +74,8 @@ pub fn start_acquisition(
                 let _ = sender.send(AcquireMessage::Log(format!("FATAL: {e}")));
                 let _ = sender.send(AcquireMessage::Finished(Err(e)));
             }
-        }
-    });
+        },
+    );
 }
 
 /// Everything needed to build a [`ZffCreationParameters`], as often as needed.
@@ -89,9 +90,19 @@ struct CreationParameters {
     unique_identifier: u64,
     description_notes: Option<String>,
     deduplication: DeduplicationMode,
+    segments: Vec<PathBuf>,
+    reuse_existing_chunks: bool,
 }
 
 impl CreationParameters {
+    fn output(&self, path: &Path) -> ZffFilesOutput {
+        if self.segments.is_empty() {
+            ZffFilesOutput::NewContainer(build_output_path(path))
+        } else {
+            ZffFilesOutput::ExtendContainer(self.segments.clone())
+        }
+    }
+
     fn build(&self) -> Result<ZffCreationParameters<File>, String> {
         Ok(ZffCreationParameters {
             signature_key: self.signature_key.clone(),
@@ -104,7 +115,7 @@ impl CreationParameters {
     }
 
     fn build_deduplication_metadata(&self) -> Result<Option<DeduplicationMetadata<File>>, String> {
-        let deduplication_map = match &self.deduplication {
+        let mut deduplication_map = match &self.deduplication {
             DeduplicationMode::None => return Ok(None),
             DeduplicationMode::InMemory => DeduplicationChunkMap::new_in_memory_map(),
             DeduplicationMode::OnDisk(path) => {
@@ -116,11 +127,27 @@ impl CreationParameters {
                 })?
             }
         };
+        // The reader decrypts duplicate chunks with the new object's key. Reusing
+        // plaintext or differently encrypted chunks would make it unreadable.
+        let original_zffreader = if self.segments.is_empty() || !self.reuse_existing_chunks {
+            None
+        } else {
+            let mut reader = ZffReader::with_reader(open_files(self.segments.clone())?)
+                .map_err(|e| e.to_string())?;
+            reader.initialize_objects_all().map_err(|e| e.to_string())?;
+            for (chunk, hash) in reader
+                .get_xxhashmaps_unencrypted()
+                .map_err(|e| e.to_string())?
+            {
+                deduplication_map
+                    .append_entry(hash, chunk)
+                    .map_err(|e| e.to_string())?;
+            }
+            Some(reader)
+        };
         Ok(Some(DeduplicationMetadata {
             deduplication_map,
-            // The GUI never extends an existing container, so there is no
-            // original container whose chunks could be referenced.
-            original_zffreader: None,
+            original_zffreader,
         }))
     }
 }
@@ -170,11 +197,25 @@ fn run_acquisition(
         unique_identifier: rng.random(),
         description_notes: params.config.description_notes.clone(),
         deduplication: params.deduplication.clone(),
+        reuse_existing_chunks: !params.config.encrypt,
+        segments: if params.command == AcquireCommand::Extend {
+            if params.segments.is_empty() {
+                return Err("Select all existing container segments".into());
+            }
+            params.segments.clone()
+        } else {
+            Vec::new()
+        },
     };
 
     let _ = sender.send(AcquireMessage::Status("Acquiring data...".to_string()));
 
-    match params.command {
+    let command = if params.command == AcquireCommand::Extend {
+        &params.append_command
+    } else {
+        &params.command
+    };
+    match command {
         AcquireCommand::Physical => acquire_physical(
             &params.config,
             &params.input_files,
@@ -197,6 +238,19 @@ fn run_acquisition(
             sender,
             cancel,
         ),
+        AcquireCommand::Memory => acquire_memory(
+            &params.config,
+            &params.output_file,
+            encryption_hdr,
+            &creation_parameters,
+            hash_types,
+            chunk_size_val,
+            sender,
+            cancel,
+        ),
+        AcquireCommand::Extend => {
+            Err("Select physical, logical or memory evidence to append".into())
+        }
         AcquireCommand::Convert => match params.convert_format {
             ConvertFormat::Tar => acquire_convert_tar(
                 &params.config,
@@ -289,6 +343,7 @@ fn drive_writer<R: Read, C: ReadAt>(
         .and_then(|e| e.to_str())
         .unwrap_or(FIRST_FILE_EXTENSION)
         .to_string();
+    let initial_chunk = zs.current_chunk_number();
     let mut buffer = vec![0u8; chunk_size as usize];
 
     loop {
@@ -326,6 +381,7 @@ fn drive_writer<R: Read, C: ReadAt>(
                     ProgressBasis::Bytes(total) => {
                         let _ = sender.send(AcquireMessage::Progress(
                             zs.current_chunk_number()
+                                .saturating_sub(initial_chunk)
                                 .saturating_mul(chunk_size)
                                 .min(*total),
                             *total,
@@ -416,7 +472,7 @@ fn acquire_physical(
         output_path.display()
     )));
 
-    let output = ZffFilesOutput::NewContainer(output_path);
+    let output = creation_parameters.output(&output_path);
     let mut zs = ZffWriter::new(
         physical_objects,
         HashMap::new(),
@@ -494,7 +550,7 @@ fn acquire_logical(
     )));
 
     let physical_objects: HashMap<ObjectHeader, File> = HashMap::new();
-    let output = ZffFilesOutput::NewContainer(output_path);
+    let output = creation_parameters.output(&output_path);
     let mut zs = ZffWriter::new(
         physical_objects,
         logical_objects,
@@ -606,7 +662,7 @@ fn acquire_convert_ewf(
         output_path.display()
     )));
 
-    let output = ZffFilesOutput::NewContainer(output_path);
+    let output = creation_parameters.output(&output_path);
     let mut zs = ZffWriter::new(
         physical_objects,
         HashMap::new(),
@@ -806,4 +862,168 @@ fn acquire_convert_tar(
         ));
     }
     Ok(outcome)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn acquire_memory(
+    config: &AcquireConfig,
+    output_file: &Path,
+    encryption_hdr: Option<EncryptionHeader>,
+    creation_parameters: &CreationParameters,
+    hash_types: Vec<zffacquire_common::HashType>,
+    chunk_size: u64,
+    sender: &tokio::sync::mpsc::UnboundedSender<AcquireMessage>,
+    cancel: &AtomicBool,
+) -> Result<AcquireOutcome, String> {
+    #[cfg(target_os = "linux")]
+    {
+        use zffacquire_common::memory_reader::{Emd, memory_size};
+        let total = memory_size().map_err(|e| format!("Cannot determine RAM size: {e}"))?;
+        if total == 0 {
+            return Err(
+                "No readable RAM ranges found; check kernel memory access privileges".into(),
+            );
+        }
+        let reader = Emd::new().map_err(|e| format!("Cannot acquire RAM via eBPF: {e}"))?;
+        let mut header = create_object_header(config, encryption_hdr, false)?;
+        header.object_type = ObjectType::Physical;
+        header
+            .description_header
+            .custom_identifier_value("zffacquire::memory", "eBPF / LiME");
+        let output = creation_parameters.output(output_file);
+        let mut writer = ZffWriter::new(
+            HashMap::from([(header, reader)]),
+            HashMap::new(),
+            HashMap::new(),
+            hash_types,
+            creation_parameters.build()?,
+            output.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+        drive_writer(
+            &mut writer,
+            &output,
+            chunk_size,
+            &ProgressBasis::Bytes(total),
+            sender,
+            cancel,
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (
+            config,
+            output_file,
+            encryption_hdr,
+            creation_parameters,
+            hash_types,
+            chunk_size,
+            sender,
+            cancel,
+        );
+        Err("Live memory acquisition is supported on Linux only".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gui_extends_multiple_segments_with_physical_and_logical_evidence() {
+        let dir = std::env::temp_dir().join(format!(
+            "zff-gui-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let input = dir.join("input.raw");
+        let mut state = 42_u64;
+        let data: Vec<u8> = (0..2 * 1024 * 1024)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect();
+        std::fs::write(&input, &data).unwrap();
+        let base = dir.join("output.z01");
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = AtomicBool::new(false);
+        let segments = || {
+            let mut paths: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.file_stem().is_some_and(|s| s == "output"))
+                .collect();
+            paths.sort();
+            paths
+        };
+        for (index, source) in [
+            AcquireCommand::Physical,
+            AcquireCommand::Physical,
+            AcquireCommand::Logical,
+            AcquireCommand::Physical,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let params = AcquireParams {
+                command: if index == 0 {
+                    source.clone()
+                } else {
+                    AcquireCommand::Extend
+                },
+                append_command: source,
+                segments: if index == 0 { Vec::new() } else { segments() },
+                convert_format: ConvertFormat::Tar,
+                config: AcquireConfig {
+                    encrypt: index == 3,
+                    ..AcquireConfig::default()
+                },
+                password: (index == 3).then(|| "test password".into()),
+                input_files: vec![input.clone()],
+                output_file: base.clone(),
+                chunk_size_str: "32KiB".into(),
+                chunkmap_size_str: "32KiB".into(),
+                segment_size_str: Some("1MiB".into()),
+                deduplication: if index == 3 {
+                    DeduplicationMode::OnDisk(dir.join("dedup.map"))
+                } else if index == 1 {
+                    DeduplicationMode::InMemory
+                } else {
+                    DeduplicationMode::None
+                },
+            };
+            assert_eq!(
+                run_acquisition(params, &sender, &cancel).unwrap(),
+                AcquireOutcome::Completed
+            );
+            assert!(segments().len() > 1);
+            let mut reader = ZffReader::with_reader(open_files(segments()).unwrap()).unwrap();
+            reader.initialize_objects_all().unwrap();
+            assert_eq!(reader.list_objects().unwrap().len(), index + 1);
+            reader.set_active_object(1).unwrap();
+            let mut actual = Vec::new();
+            reader.read_to_end(&mut actual).unwrap();
+            assert_eq!(actual, data);
+            if index > 0 {
+                let object_number = index as u64 + 1;
+                if index == 3 {
+                    reader
+                        .decrypt_object(object_number, "test password")
+                        .unwrap();
+                }
+                reader.set_active_object(object_number).unwrap();
+                if index == 2 {
+                    reader.set_active_file(1).unwrap();
+                }
+                actual.clear();
+                reader.read_to_end(&mut actual).unwrap();
+                assert_eq!(actual, data);
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

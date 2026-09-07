@@ -35,15 +35,12 @@ pub enum Screen {
     Progress,
 }
 
-/// The acquisitions the GUI can carry out.
-///
-/// Memory acquisition and extending an existing container are command line
-/// features: they need input the wizard has no screen for, so they are not
-/// offered here rather than being offered and then refused.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AcquireCommand {
     Physical,
     Logical,
+    Memory,
+    Extend,
     Convert,
 }
 
@@ -120,6 +117,9 @@ pub enum Message {
     PrevScreen,
     SelectCommand(AcquireCommand),
     ConvertFormatChanged(ConvertFormat),
+    AppendCommandChanged(AcquireCommand),
+    PickSegments,
+    SegmentsSelected(Vec<PathBuf>),
     CompressionAlgoChanged(CompressionAlgorithm),
     CompressionLevelChanged(u8),
     CompressionThresholdChanged(String),
@@ -163,6 +163,8 @@ pub struct ZffAcquireApp {
     pub current_screen: Screen,
     pub selected_command: Option<AcquireCommand>,
     pub convert_format: ConvertFormat,
+    pub append_command: AcquireCommand,
+    pub segments: Vec<PathBuf>,
 
     pub compression_algo: CompressionAlgorithm,
     pub compression_level: u8,
@@ -210,6 +212,8 @@ impl ZffAcquireApp {
             current_screen: Screen::CommandSelect,
             selected_command: None,
             convert_format: ConvertFormat::Tar,
+            append_command: AcquireCommand::Logical,
+            segments: Vec::new(),
             compression_algo: CompressionAlgorithm::Zstd,
             compression_level: 3,
             compression_threshold: 1.05,
@@ -244,6 +248,13 @@ impl ZffAcquireApp {
         };
 
         (app, Task::none())
+    }
+
+    pub fn source_command(&self) -> Option<&AcquireCommand> {
+        match self.selected_command.as_ref() {
+            Some(AcquireCommand::Extend) => Some(&self.append_command),
+            command => command,
+        }
     }
 
     pub fn title(&self) -> String {
@@ -301,8 +312,34 @@ impl ZffAcquireApp {
                 };
             }
             Message::SelectCommand(cmd) => {
+                self.input_files.clear();
                 self.selected_command = Some(cmd);
                 self.current_screen = Screen::Parameters;
+            }
+            Message::AppendCommandChanged(cmd) => {
+                self.append_command = cmd;
+                self.input_files.clear();
+            }
+            Message::SegmentsSelected(paths) => {
+                if !paths.is_empty() {
+                    self.segments = paths;
+                }
+            }
+            Message::PickSegments => {
+                return Task::perform(
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Select ALL segments of the container to extend")
+                        .pick_files(),
+                    |handles| {
+                        Message::SegmentsSelected(
+                            handles
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|h| h.path().to_path_buf())
+                                .collect(),
+                        )
+                    },
+                );
             }
             Message::ConvertFormatChanged(fmt) => {
                 self.convert_format = fmt;
@@ -401,13 +438,33 @@ impl ZffAcquireApp {
                 }
             }
             Message::PickInputFile => {
+                let multiple = self.source_command() == Some(&AcquireCommand::Logical)
+                    || (self.source_command() == Some(&AcquireCommand::Convert)
+                        && self.convert_format == ConvertFormat::Ewf);
+                if multiple {
+                    return Task::perform(
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Select input files")
+                            .pick_files(),
+                        |handles| {
+                            Message::InputFilesSelected(
+                                handles
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|h| h.path().to_path_buf())
+                                    .collect(),
+                            )
+                        },
+                    );
+                }
                 return Task::perform(
                     rfd::AsyncFileDialog::new()
                         .set_title("Select input file")
                         .pick_file(),
-                    |handle| match handle {
-                        Some(h) => Message::InputFilesSelected(vec![h.path().to_path_buf()]),
-                        None => Message::InputFilesSelected(Vec::new()),
+                    |handle| {
+                        Message::InputFilesSelected(
+                            handle.into_iter().map(|h| h.path().to_path_buf()).collect(),
+                        )
                     },
                 );
             }
@@ -449,7 +506,19 @@ impl ZffAcquireApp {
                 );
             }
             Message::InputFilesSelected(files) => {
-                self.input_files.extend(files);
+                if !files.is_empty() {
+                    let multiple = self.source_command() == Some(&AcquireCommand::Logical)
+                        || (self.source_command() == Some(&AcquireCommand::Convert)
+                            && self.convert_format == ConvertFormat::Ewf);
+                    if !multiple {
+                        self.input_files.clear();
+                    }
+                    for file in files {
+                        if !self.input_files.contains(&file) {
+                            self.input_files.push(file);
+                        }
+                    }
+                }
             }
             Message::OutputFileSelected(path) => {
                 if !path.as_os_str().is_empty() {
@@ -460,11 +529,18 @@ impl ZffAcquireApp {
                 self.input_files.clear();
             }
             Message::StartAcquisition => {
+                if self.is_running {
+                    return Task::none();
+                }
                 let command = match self.selected_command.clone() {
                     Some(cmd) => cmd,
                     None => return Task::none(),
                 };
-                let output_file = match self.output_file.clone() {
+                let output_file = match if command == AcquireCommand::Extend {
+                    self.segments.first().cloned()
+                } else {
+                    self.output_file.clone()
+                } {
                     Some(path) => path,
                     None => return Task::none(),
                 };
@@ -488,6 +564,8 @@ impl ZffAcquireApp {
 
                 let params = AcquireParams {
                     command,
+                    append_command: self.append_command.clone(),
+                    segments: self.segments.clone(),
                     convert_format: self.convert_format.clone(),
                     config,
                     password,
@@ -514,7 +592,7 @@ impl ZffAcquireApp {
                 if let Some(ref token) = self.cancel_token {
                     token.store(true, Ordering::Relaxed);
                 }
-                self.is_running = false;
+                self.progress_status = "Cancelling...".to_string();
             }
             Message::AcquireProgress(current, total) => {
                 self.progress_current = current;

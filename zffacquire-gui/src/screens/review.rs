@@ -17,6 +17,8 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
         let label = match cmd {
             crate::app::AcquireCommand::Physical => "Physical Disk",
             crate::app::AcquireCommand::Logical => "Logical Files",
+            AcquireCommand::Memory => "Memory",
+            AcquireCommand::Extend => "Extend Container",
             crate::app::AcquireCommand::Convert => "Convert Format",
         };
         items.push(review_row("Command", label));
@@ -35,7 +37,21 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
         items.push(review_row("Input", &input_display));
     }
 
-    if let Some(output) = &model.output_file {
+    let is_extend = model.selected_command == Some(AcquireCommand::Extend);
+    let is_memory = model.source_command() == Some(&AcquireCommand::Memory);
+    if is_extend {
+        items.push(review_row(
+            "Append source",
+            &format!("{:?}", model.append_command),
+        ));
+        for segment in &model.segments {
+            items.push(review_row(
+                "Existing segment",
+                &segment.display().to_string(),
+            ));
+        }
+    }
+    if let Some(output) = model.output_file.as_ref().filter(|_| !is_extend) {
         let mut path = output.clone();
         path.set_extension("z01");
         items.push(review_row("Output", &path.display().to_string()));
@@ -104,8 +120,12 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
     }
 
     let can_start = model.selected_command.is_some()
-        && model.output_file.is_some()
-        && !model.input_files.is_empty()
+        && (if is_extend {
+            !model.segments.is_empty()
+        } else {
+            model.output_file.is_some()
+        })
+        && (is_memory || !model.input_files.is_empty())
         && (!model.encrypt || model.password == model.password_confirm);
 
     let mut review_items = column![].spacing(2);
@@ -133,10 +153,10 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
         if model.selected_command.is_none() {
             issues.push("No command selected");
         }
-        if model.input_files.is_empty() {
+        if !is_memory && model.input_files.is_empty() {
             issues.push("No input files selected");
         }
-        if model.output_file.is_none() {
+        if (is_extend && model.segments.is_empty()) || (!is_extend && model.output_file.is_none()) {
             issues.push("No output file selected");
         }
         if model.encrypt && model.password != model.password_confirm {

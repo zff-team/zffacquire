@@ -23,10 +23,6 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
         .center()
         .style(style::dim_text);
 
-    // Only what the GUI can actually carry out is offered. Memory acquisition
-    // and extending a container are implemented in the command line tool alone;
-    // listing them here would let the user walk the whole wizard only to be
-    // told at the end that nothing was going to happen.
     let commands: Vec<(&str, &str, AcquireCommand, bool)> = vec![
         (
             "Physical Disk",
@@ -44,6 +40,18 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
             "Convert Format",
             "Convert TAR or E01 to ZFF",
             AcquireCommand::Convert,
+            true,
+        ),
+        (
+            "Memory",
+            "Acquire live RAM using eBPF (Linux; requires privileges)",
+            AcquireCommand::Memory,
+            cfg!(target_os = "linux"),
+        ),
+        (
+            "Extend Container",
+            "Append physical, logical or memory evidence",
+            AcquireCommand::Extend,
             true,
         ),
     ];
@@ -90,6 +98,8 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
             let label = match cmd {
                 AcquireCommand::Physical => "Physical Disk",
                 AcquireCommand::Logical => "Logical Files",
+                AcquireCommand::Memory => "Memory",
+                AcquireCommand::Extend => "Extend Container",
                 AcquireCommand::Convert => "Convert Format",
             };
             text(format!("Selected: {label}"))

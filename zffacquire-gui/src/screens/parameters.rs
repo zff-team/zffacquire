@@ -451,7 +451,7 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
         .push(section_card("Hash Algorithms", hash_section.into()))
         .push(section_card("Signing", signing_section.into()));
 
-    if model.selected_command.as_ref() == Some(&AcquireCommand::Physical) {
+    if model.source_command() == Some(&AcquireCommand::Physical) {
         params_col = params_col.push(section_card("Input", input_section.into()));
     }
 

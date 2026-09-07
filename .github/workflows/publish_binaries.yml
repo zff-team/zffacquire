@@ -19,8 +19,8 @@ jobs:
       matrix:
         include:
           - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            name: Linux x86_64
+            target: x86_64-unknown-linux-musl
+            name: Linux x86_64 (static)
             fid: x86_64-linux
           - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
@@ -53,6 +53,12 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y pkg-config libacl1-dev libudev-dev
 
+    - name: Prepare musl native libraries
+      if: matrix.target == 'x86_64-unknown-linux-musl'
+      run: |
+        sudo apt-get install -y musl-tools
+        sudo bash build-support/prepare-musl-sysroot.sh
+
     # Cross-compiling to aarch64 needs the cross linker, and the -sys crates
     # need their libraries for that architecture rather than the host's.
     - name: Install cross toolchain (Linux aarch64)
@@ -73,7 +79,23 @@ jobs:
       env:
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         PKG_CONFIG_ALLOW_CROSS: 1
+        PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        CC_x86_64_unknown_linux_musl: musl-gcc
+        PKG_CONFIG_SYSROOT_DIR_x86_64_unknown_linux_musl: /opt/zffacquire-musl
+        PKG_CONFIG_LIBDIR_x86_64_unknown_linux_musl: /opt/zffacquire-musl/usr/lib/pkgconfig
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: -L native=/opt/zffacquire-musl/usr/lib -l static=udev
       run: cargo build --release -p ${{ env.PROJECT_NAME }} --target ${{ matrix.target }}
+
+    - name: Verify static CLI
+      if: matrix.target == 'x86_64-unknown-linux-musl'
+      run: |
+        binary=target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}
+        if readelf -d "$binary" | grep -q NEEDED || readelf -l "$binary" | grep -q INTERP; then
+          echo 'Expected a fully static CLI' >&2
+          exit 1
+        fi
+        "$binary" --version
 
     - name: Stage executable (unix)
       if: runner.os != 'Windows'

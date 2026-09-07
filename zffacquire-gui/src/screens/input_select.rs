@@ -51,9 +51,50 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
         })
         .unwrap_or_else(|| "Not selected".to_string());
 
+    let output_display = if model.selected_command == Some(AcquireCommand::Extend) {
+        model
+            .segments
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        output_display
+    };
+    let output_message = if model.selected_command == Some(AcquireCommand::Extend) {
+        Message::PickSegments
+    } else {
+        Message::PickOutputFile
+    };
     let selected_count = model.input_files.len();
 
-    match &model.selected_command {
+    if model.selected_command == Some(AcquireCommand::Extend) {
+        let mut choices = row![
+            button("Logical files")
+                .on_press(Message::AppendCommandChanged(AcquireCommand::Logical)),
+            button("Physical disk/image")
+                .on_press(Message::AppendCommandChanged(AcquireCommand::Physical)),
+        ]
+        .spacing(8);
+        if cfg!(target_os = "linux") {
+            choices = choices.push(
+                button("Memory").on_press(Message::AppendCommandChanged(AcquireCommand::Memory)),
+            );
+        }
+        content = content
+            .push(text("Select the source to append"))
+            .push(choices)
+            .push(text(format!("Append source: {:?}", model.append_command)).size(12))
+            .push(button("Select existing container segments...").on_press(Message::PickSegments));
+        for segment in &model.segments {
+            content = content.push(text(segment.display().to_string()).size(12));
+        }
+        content = content.push(
+            text("All existing segments are required. Acquisition appends to this container.")
+                .size(12),
+        );
+    }
+    match model.source_command() {
         Some(AcquireCommand::Physical) => {
             let input_card = {
                 let inner = column![
@@ -82,7 +123,7 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
                         .width(Length::Fill)
                         .style(style::card_flat),
                     button(text("Browse Output...").size(13))
-                        .on_press(Message::PickOutputFile)
+                        .on_press(output_message.clone())
                         .padding(iced::Padding::from([10.0f32, 20.0]))
                         .style(style::btn_primary),
                 ]
@@ -93,7 +134,10 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
                     .width(Length::Fill)
                     .style(style::section_card)
             };
-            content = content.push(input_card).push(output_card);
+            content = content.push(input_card);
+            if model.selected_command != Some(AcquireCommand::Extend) {
+                content = content.push(output_card);
+            }
         }
         Some(AcquireCommand::Logical) => {
             let input_card = {
@@ -173,7 +217,7 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
                         .width(Length::Fill)
                         .style(style::card_flat),
                     button(text("Browse Output...").size(13))
-                        .on_press(Message::PickOutputFile)
+                        .on_press(output_message.clone())
                         .padding(iced::Padding::from([10.0f32, 20.0]))
                         .style(style::btn_primary),
                 ]
@@ -185,7 +229,10 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
                     .style(style::section_card)
             };
 
-            content = content.push(input_card).push(output_card);
+            content = content.push(input_card);
+            if model.selected_command != Some(AcquireCommand::Extend) {
+                content = content.push(output_card);
+            }
         }
         Some(AcquireCommand::Convert) => {
             let hint_text = match model.convert_format {
@@ -224,7 +271,7 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
                         .width(Length::Fill)
                         .style(style::card_flat),
                     button(text("Browse Output...").size(13))
-                        .on_press(Message::PickOutputFile)
+                        .on_press(output_message.clone())
                         .padding(iced::Padding::from([10.0f32, 20.0]))
                         .style(style::btn_primary),
                 ]
@@ -235,9 +282,20 @@ pub fn view(model: &ZffAcquireApp) -> Element<'_, Message> {
                     .width(Length::Fill)
                     .style(style::section_card)
             };
-            content = content.push(input_card).push(output_card);
+            content = content.push(input_card);
+            if model.selected_command != Some(AcquireCommand::Extend) {
+                content = content.push(output_card);
+            }
         }
-        None => {
+        Some(AcquireCommand::Memory) => {
+            content = content.push(text("Live RAM acquisition via eBPF (Linux). Run with the privileges required to read kernel memory."));
+            if model.selected_command != Some(AcquireCommand::Extend) {
+                content = content
+                    .push(path_display(&output_display))
+                    .push(button("Browse Output...").on_press(Message::PickOutputFile));
+            }
+        }
+        Some(AcquireCommand::Extend) | None => {
             content = content.push(text("No command selected").size(14).style(style::dim_text));
         }
     }

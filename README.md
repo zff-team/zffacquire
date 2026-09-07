@@ -159,3 +159,44 @@ itself.
 ```zffacquire-gui``` covers physical, logical and convert acquisitions. Memory
 acquisition and extending an existing container are available in the command
 line tool only.
+
+### Linux release builds
+
+The CLI can be linked statically against musl, including libudev and POSIX ACL
+support. The GUI is built separately for GNU/Linux because its desktop and
+graphics backends use shared libraries.
+
+`build-support/prepare-musl-sysroot.sh` provisions `/opt/zffacquire-musl` inside a
+builder or disposable CI runner. It verifies a pinned Alpine root filesystem by
+SHA-256, then uses Alpine's signed packages for the musl development libraries.
+The packages come from the [official Alpine repository](https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/).
+Do not install this sysroot on the acquisition machine.
+
+For the local `noble` builder, run:
+
+```sh
+sudo systemd-run -M noble --wait --pipe /bin/bash "$PWD/build-support/prepare-musl-sysroot.sh"
+./.scripts/install-builder-dropins.sh
+./.scripts/build_and_release.sh --release
+```
+
+The project drop-in runs `build-support/release-in-builder.sh` inside the existing
+unprivileged, offline build sandbox. It produces the static CLI under
+`x86_64-unknown-linux-musl/release/` and the GUI under
+`x86_64-unknown-linux-gnu/release/` in the builder's target directory. A CLI with
+an ELF interpreter or shared-library dependencies fails the release check.
+The x86_64 Linux release workflow provisions the same sysroot and checks linkage.
+
+### GUI memory and extension
+
+Choose **Memory** to acquire live RAM on Linux through the same eBPF reader as the
+CLI. Kernel memory access and eBPF privileges are required; setup failures appear
+in the acquisition log. Memory acquisition is unavailable on other platforms.
+
+Choose **Extend Container**, select **all** existing segments, and choose logical
+files, a physical disk/image, or Linux memory as the new evidence source. Review
+lists the selected segments before acquisition appends the new object. Encryption
+and signing parameters apply to the new evidence. For encrypted additions,
+deduplication stays within the new data; existing chunks may use a different key
+and are not reused. Cancelling waits for the worker
+to stop; an interrupted write may leave an incomplete container.

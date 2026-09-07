@@ -39,3 +39,6 @@ pub use zff::{
         zffwriter::{SegmentationState, ZffFilesOutput, ZffWriter},
     },
 };
+
+#[cfg(target_os = "linux")]
+pub mod memory_reader;

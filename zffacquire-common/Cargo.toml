@@ -22,6 +22,11 @@ phollpers = { version = "0.1.0", features = ["compression"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 udev = "0.9.3"
+libc = "0.2"
+aya = { version = "0.13.0", default-features = false }
+emd-ebpf = "1.0.7"
+emd-common = { version = "0.5.0", features = ["std"] }
+procfs = "0.18"
 
 [target.'cfg(target_family = "windows")'.dependencies]
 windows-drives = "0.5.0"
